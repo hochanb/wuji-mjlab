@@ -95,6 +95,19 @@ def cube_pos_in_tag(
   return cube_pos_tag
 
 
+def goal_pos_err_in_tag(
+  env,
+  command_name: str,
+  object_cfg: SceneEntityCfg = _DEFAULT_OBJECT_CFG,
+  robot_cfg: SceneEntityCfg = _DEFAULT_PALM_CFG,
+  tag_cfg: SceneEntityCfg = _DEFAULT_TAG_CFG,
+) -> torch.Tensor:
+  """Goal minus cube position, expressed in the tag frame."""
+  command = env.command_manager.get_term(command_name)
+  cube_pos_tag = cube_pos_in_tag(env, object_cfg, robot_cfg, tag_cfg)
+  return command.goal_pos_tag - cube_pos_tag
+
+
 def goal_rot_err_6d(
   env,
   command_name: str,

@@ -90,10 +90,11 @@ class ObsBuilder:
     "action_history": 20,
   }
 
-  def __init__(self, history_length: int = 1):
-    self.TERM_SPECS = {
-      name: (dim, history_length) for name, dim in self._TERM_DIMS.items()
-    }
+  def __init__(self, history_length: int = 1, goal_pos_obs: bool = False):
+    term_dims = dict(self._TERM_DIMS)
+    if goal_pos_obs:
+      term_dims["goal_pos_err"] = 3
+    self.TERM_SPECS = {name: (dim, history_length) for name, dim in term_dims.items()}
     self._buffers: dict[str, deque] = {}
     self._init_buffers()
 
@@ -124,11 +125,14 @@ class ObsBuilder:
     prev_target: np.ndarray,
     goal_quat: np.ndarray,
     last_action: np.ndarray,
+    goal_pos_tag: np.ndarray | None = None,
   ) -> np.ndarray:
     """Compute current obs terms, push into history, return flattened obs.
 
     Args:
       last_action: Raw action from the previous policy step.
+      goal_pos_tag: Goal cube position in the tag frame; required when the
+        builder was created with ``goal_pos_obs=True``.
     """
     joint_angles = compute_joint_pos_normalized(scene)
     qpos_error = compute_joint_pos_target_error(scene, prev_target)
@@ -141,6 +145,9 @@ class ObsBuilder:
     self._append_with_backfill("cube_pos_in_tag", cube_pos_in_tag)
     self._append_with_backfill("cube_ori_error", cube_ori_error)
     self._append_with_backfill("action_history", action_obs)
+    if "goal_pos_err" in self.TERM_SPECS:
+      assert goal_pos_tag is not None
+      self._append_with_backfill("goal_pos_err", goal_pos_tag - cube_pos_in_tag)
 
     parts = []
     for name in self.TERM_SPECS:
@@ -171,6 +178,10 @@ class EvalConfig:
   hand: str = "hand1"
   hand_side: str = "right"
   history_len: int | None = None
+  # Per-axis (lo, hi) goal-position box in the tag frame [m]; None keeps the
+  # orientation-only protocol. lo == hi pins the goal to one point.
+  goal_pos_range: tuple[tuple[float, float], ...] | None = None
+  pos_success_threshold: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -181,6 +192,8 @@ class TrialOutcome:
   goal_reaches: int
   final_ori_error_rad: float
   min_ori_error_rad: float
+  final_pos_error_m: float | None = None
+  min_pos_error_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +206,7 @@ class EvalResult:
   mean_goal_reaches: float
   mean_time_to_first_success_s: float | None
   mean_min_ori_error_rad: float
+  mean_min_pos_error_m: float | None = None
   trials: list[TrialOutcome] = field(default_factory=list)
   train_config: dict[str, Any] = field(default_factory=dict)
 
@@ -217,6 +231,8 @@ class EvalResult:
         "hand": cfg.hand,
         "hand_side": cfg.hand_side,
         "history_len": cfg.history_len,
+        "goal_pos_range": cfg.goal_pos_range,
+        "pos_success_threshold": cfg.pos_success_threshold,
       },
       "onnx_path_resolved": str(self.onnx_path_resolved),
       "success_rate": self.success_rate,
@@ -225,6 +241,7 @@ class EvalResult:
       "mean_goal_reaches": self.mean_goal_reaches,
       "mean_time_to_first_success_s": self.mean_time_to_first_success_s,
       "mean_min_ori_error_rad": self.mean_min_ori_error_rad,
+      "mean_min_pos_error_m": self.mean_min_pos_error_m,
       "trials": [
         {
           "trial_idx": t.trial_idx,
@@ -233,6 +250,8 @@ class EvalResult:
           "goal_reaches": t.goal_reaches,
           "final_ori_error_rad": t.final_ori_error_rad,
           "min_ori_error_rad": t.min_ori_error_rad,
+          "final_pos_error_m": t.final_pos_error_m,
+          "min_pos_error_m": t.min_pos_error_m,
         }
         for t in self.trials
       ],
@@ -281,7 +300,18 @@ def run_eval(config: EvalConfig) -> EvalResult:
     else train_config.get("history_len", 1)
   )
 
-  obs_builder = ObsBuilder(history_length=history_len)
+  # The policy sees the goal-position error only if it was trained with it; an
+  # orientation-only policy can still be scored against a position goal.
+  goal_pos_obs = "goal_pos_err" in train_config.get("obs_term_names", [])
+  if goal_pos_obs and config.goal_pos_range is None:
+    print("ERROR: policy observes goal_pos_err; pass --goal-pos-range.")
+    sys.exit(1)
+  pos_goal = config.goal_pos_range is not None
+  if pos_goal:
+    goal_pos_lo, goal_pos_hi = np.asarray(config.goal_pos_range, dtype=np.float64).T
+  pos_success_threshold = config.pos_success_threshold
+
+  obs_builder = ObsBuilder(history_length=history_len, goal_pos_obs=goal_pos_obs)
   expected_obs = obs_builder.obs_size
   if expected_obs != onnx_obs_size:
     print(f"ERROR: Expected obs size {expected_obs} but ONNX expects {onnx_obs_size}.")
@@ -319,6 +349,12 @@ def run_eval(config: EvalConfig) -> EvalResult:
   print(
     f"Hold:      {success_hold_steps} control steps ({success_hold_steps * ctrl_dt:.1f}s), switch delay={goal_switch_delay}"
   )
+  if pos_goal:
+    print(
+      f"Pos goal:  lo={goal_pos_lo.tolist()} hi={goal_pos_hi.tolist()} (tag frame), "
+      f"threshold={pos_success_threshold * 100:.1f} cm, "
+      f"policy obs={'yes' if goal_pos_obs else 'no'}"
+    )
   print(f"Obs size:  {obs_builder.obs_size}")
   print(f"Scene:     nq={scene.model.nq}, nu={scene.model.nu}")
   print(f"Viewer:    {'disabled' if config.no_viewer else 'enabled'}")
@@ -347,9 +383,10 @@ def run_eval(config: EvalConfig) -> EvalResult:
     prev_target: np.ndarray,
     last_action: np.ndarray,
     episode_step: int,
+    goal_pos_tag: np.ndarray | None = None,
   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """One control step: build obs → infer → apply action."""
-    obs = obs_builder.build(scene, prev_target, goal_quat, last_action)
+    obs = obs_builder.build(scene, prev_target, goal_quat, last_action, goal_pos_tag)
     onnx_input = {input_name: obs.reshape(1, -1)}
     action = session.run(output_names, onnx_input)[0][0]
     new_target = apply_action(
@@ -391,12 +428,19 @@ def run_eval(config: EvalConfig) -> EvalResult:
           break
       set_goal_mocap(scene, goal_q)
       mujoco.mj_forward(scene.model, scene.data)
+      goal_pos_tag = (
+        np.random.uniform(goal_pos_lo, goal_pos_hi).astype(np.float32)
+        if pos_goal
+        else None
+      )
 
       trial_start_sim = scene.data.time
       trial_start_wall = time.time()
       result = "timeout"
       min_ori_error = np.pi
       current_ori_error = np.pi
+      min_pos_error = np.inf
+      current_pos_error = np.inf
       hold_state = HoldState()
       time_to_first_success_s: float | None = None
       goal_reaches = 0
@@ -417,6 +461,7 @@ def run_eval(config: EvalConfig) -> EvalResult:
           prev_target,
           last_action,
           episode_step,
+          goal_pos_tag,
         )
         last_action = action.copy()
         episode_step += 1
@@ -433,14 +478,24 @@ def run_eval(config: EvalConfig) -> EvalResult:
 
         current_ori_error = quat_error_magnitude(scene.cube_quat, goal_q)
         min_ori_error = min(min_ori_error, current_ori_error)
+        # Success needs both gates; a failed position gate reads as out of
+        # threshold so check_hold keeps its training-matched hold semantics.
+        gate_error = current_ori_error
+        if pos_goal:
+          current_pos_error = float(
+            np.linalg.norm(compute_cube_pos_in_tag(scene) - goal_pos_tag)
+          )
+          min_pos_error = min(min_pos_error, current_pos_error)
+          if current_pos_error >= pos_success_threshold:
+            gate_error = np.inf
         hold_state, hold_events = check_hold(
-          current_ori_error,
+          gate_error,
           hold_state,
           threshold=success_threshold,
           success_hold_steps=success_hold_steps,
           goal_switch_delay=goal_switch_delay,
         )
-        if current_ori_error < success_threshold:
+        if gate_error < success_threshold:
           if was_above_threshold:
             goal_reaches += 1
             if time_to_first_success_s is None:
@@ -513,6 +568,8 @@ def run_eval(config: EvalConfig) -> EvalResult:
           goal_reaches=goal_reaches,
           final_ori_error_rad=float(current_ori_error),
           min_ori_error_rad=float(min_ori_error),
+          final_pos_error_m=float(current_pos_error) if pos_goal else None,
+          min_pos_error_m=float(min_pos_error) if pos_goal else None,
         )
       )
 
@@ -568,6 +625,12 @@ def run_eval(config: EvalConfig) -> EvalResult:
     else 0.0
   )
 
+  mean_min_pos_error_m = (
+    float(np.mean([t.min_pos_error_m for t in trial_outcomes]))
+    if pos_goal and trial_outcomes
+    else None
+  )
+
   legacy_results_path = output_dir / "eval_results.json"
   legacy_payload = {
     "onnx_path": str(onnx_path),
@@ -608,6 +671,7 @@ def run_eval(config: EvalConfig) -> EvalResult:
     mean_goal_reaches=mean_goal_reaches,
     mean_time_to_first_success_s=mean_time_to_first_success_s,
     mean_min_ori_error_rad=mean_min_ori_error_rad,
+    mean_min_pos_error_m=mean_min_pos_error_m,
     trials=trial_outcomes,
     train_config=train_config,
   )
@@ -698,6 +762,24 @@ def _parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
       "value fails loudly at the ONNX obs-size check."
     ),
   )
+  parser.add_argument(
+    "--goal-pos-range",
+    type=float,
+    nargs=6,
+    metavar=("X_LO", "X_HI", "Y_LO", "Y_HI", "Z_LO", "Z_HI"),
+    default=None,
+    help=(
+      "Also require a cube position goal, sampled per trial from this tag-frame "
+      "box [m]; equal lo/hi pins it to one point. Required for policies trained "
+      "with the goal_pos_err observation."
+    ),
+  )
+  parser.add_argument(
+    "--pos-success-threshold",
+    type=float,
+    default=0.01,
+    help="Position success threshold [m] used with --goal-pos-range.",
+  )
   args = parser.parse_args(argv)
   if args.json_output is not None and args.json_output.name in {
     "eval_results.json",
@@ -727,6 +809,12 @@ def _config_from_args(args: argparse.Namespace) -> EvalConfig:
     hand=args.hand,
     hand_side=args.hand_side,
     history_len=args.history_len,
+    goal_pos_range=(
+      None
+      if args.goal_pos_range is None
+      else tuple(zip(args.goal_pos_range[::2], args.goal_pos_range[1::2], strict=True))
+    ),
+    pos_success_threshold=args.pos_success_threshold,
   )
 
 
@@ -768,6 +856,10 @@ def _print_terminal_summary(result: EvalResult) -> None:
     errors = [float(np.degrees(t.min_ori_error_rad)) for t in result.trials]
     print(f"  Avg min orientation error:    {np.mean(errors):6.1f} deg")
     print(f"  Median min orientation error: {np.median(errors):6.1f} deg")
+    if result.mean_min_pos_error_m is not None:
+      pos_errors = [100 * t.min_pos_error_m for t in result.trials]
+      print(f"  Avg min position error:       {np.mean(pos_errors):6.2f} cm")
+      print(f"  Median min position error:    {np.median(pos_errors):6.2f} cm")
     print(f"  Mean goal reaches / trial:    {result.mean_goal_reaches:6.2f}")
     if result.mean_time_to_first_success_s is not None:
       print(

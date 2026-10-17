@@ -14,6 +14,7 @@ import viser
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg
+from mjlab.utils.lab_api.math import matrix_from_quat
 from mjlab.viewer import ViserPlayViewer
 from mjlab.viewer.native.visualizer import MujocoNativeDebugVisualizer
 from wuji_mjlab.tasks.reorient import mdp as reorient_mdp
@@ -314,18 +315,71 @@ def test_native_play_debug_visuals(native_play_env, decoration):
     assert np.all(cages[0].size > 0)
 
 
-def test_unsupported_visualizer_warns_once(native_play_env):
-  class UnsupportedVisualizer(_StubVisualizer):
-    pass
+class _PrimitiveVisualizer(_StubVisualizer):
+  """Non-native visualizer (viser-like): primitives only, no MjvScene."""
 
+  def __init__(self) -> None:
+    super().__init__()
+    self.boxes = []
+    self.spheres = []
+
+  def get_env_indices(self, num_envs: int) -> list[int]:
+    return list(range(num_envs))
+
+  def add_box(self, center, size, mat, color, label=None) -> None:
+    self.boxes.append({"center": np.asarray(center), "mat": np.asarray(mat)})
+
+  def add_sphere(self, center, radius, color, label=None) -> None:
+    self.spheres.append({"center": np.asarray(center), "label": label})
+
+
+def test_non_native_visualizer_draws_primitive_goal(native_play_env):
   command = native_play_env.command_manager.get_term("reorient_command")
-  visualizer = UnsupportedVisualizer()
-  with pytest.warns(RuntimeWarning, match="UnsupportedVisualizer"):
-    command._debug_vis_impl(visualizer)
+  visualizer = _PrimitiveVisualizer()
   with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     command._debug_vis_impl(visualizer)
-  assert not caught
+  assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
+  assert len(visualizer.boxes) == command.num_envs
+  # Orientation-only goal: ghost floats above the live cube with the goal rotation.
+  cube_pos = command.object.data.root_link_pos_w[0].cpu().numpy()
+  np.testing.assert_allclose(
+    visualizer.boxes[0]["center"], goal_vis_position_above_object(cube_pos), atol=1e-5
+  )
+  np.testing.assert_allclose(
+    visualizer.boxes[0]["mat"],
+    matrix_from_quat(command.goal_quat_w[:1]).cpu().numpy()[0],
+    atol=1e-5,
+  )
+  # Goal triad + live-cube triad per env, on top of the palm/tag triads.
+  assert sum("cube_frame" in f["label"] for f in visualizer.frames) == command.num_envs
+
+
+def test_position_goal_ghost_sits_at_goal_position():
+  visualization = ReorientCommandVisualization(entity_name="object")
+  visualizer = _PrimitiveVisualizer()
+  pose = torch.tensor([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
+  goal_pos = torch.tensor([[0.1, -0.2, 0.3]])
+  visualization.draw_debug_visuals(
+    visualizer=visualizer,
+    num_envs=1,
+    palm_pose_w=pose,
+    tag_pose_w=pose,
+    object_pos_w=pose[:, :3],
+    goal_quat_w=pose[:, 3:],
+    policy_status_for_env=lambda _: (0.0, True),
+    goal_pos_w=goal_pos,
+    object_quat_w=pose[:, 3:],
+  )
+  np.testing.assert_allclose(visualizer.boxes[0]["center"], goal_pos[0].numpy())
+  assert any("goal_pos" in (sp["label"] or "") for sp in visualizer.spheres)
+
+
+def test_format_reorient_status_markdown_shows_pos_error():
+  got = format_reorient_status_markdown(
+    ori_error_rad=0.0, success=False, pos_error_m=0.0123
+  )
+  assert "pos_error: 1.23 cm" in got
 
 
 def test_native_goal_without_material_warns_once():

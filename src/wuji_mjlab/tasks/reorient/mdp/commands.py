@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
-from mjlab.utils.lab_api.math import quat_error_magnitude, quat_mul
+from mjlab.utils.lab_api.math import quat_apply, quat_error_magnitude, quat_mul
 
 from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
   ReorientCommandVisualization,
@@ -44,6 +44,13 @@ class InHandReorientCommand(CommandTerm):
 
     self.goal_quat_w = torch.zeros(self.num_envs, 4, device=self.device)
     self.goal_quat_w[:, 0] = 1.0
+
+    # Optional position goal, stored in the wrist-tag frame (deploy semantics).
+    self.goal_pos_tag = torch.zeros(self.num_envs, 3, device=self.device)
+    if cfg.goal_pos_range is not None:
+      lo, hi = torch.tensor(cfg.goal_pos_range, device=self.device).T
+      self._goal_pos_lo, self._goal_pos_hi = lo, hi
+      self.goal_pos_tag[:] = 0.5 * (lo + hi)
 
     self.hold_counter = torch.zeros(
       self.num_envs, dtype=torch.int32, device=self.device
@@ -87,8 +94,12 @@ class InHandReorientCommand(CommandTerm):
     self.metrics["goal_timer"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["in_success_window"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["window_timer"] = torch.zeros(self.num_envs, device=self.device)
+    if cfg.goal_pos_range is not None:
+      self.metrics["pos_error"] = torch.zeros(self.num_envs, device=self.device)
 
     self._visualization = ReorientCommandVisualization(entity_name=self.cfg.entity_name)
+    if cfg.goal_pos_range is not None:
+      self._visualization.pos_error_for_env = lambda i: float(self.pos_error()[i])
 
   @property
   def command(self) -> torch.Tensor:
@@ -98,6 +109,14 @@ class InHandReorientCommand(CommandTerm):
   def goal_quat(self) -> torch.Tensor:
     return self.goal_quat_w
 
+  @property
+  def goal_pos_w(self) -> torch.Tensor:
+    tag_pose = self.robot.data.site_pose_w[:, self.tag_site_id]
+    return tag_pose[:, :3] + quat_apply(tag_pose[:, 3:7], self.goal_pos_tag)
+
+  def pos_error(self) -> torch.Tensor:
+    return torch.norm(self.object.data.root_link_pos_w - self.goal_pos_w, dim=-1)
+
   def _update_metrics(self) -> None:
     self.metrics["goal_reach_count"] = self.goal_reach_count.float()
     ori_err = quat_error_magnitude(self.object.data.root_link_quat_w, self.goal_quat_w)
@@ -106,6 +125,8 @@ class InHandReorientCommand(CommandTerm):
     self.metrics["goal_timer"] = self.goal_timer.float()
     self.metrics["in_success_window"] = self.in_success_window.float()
     self.metrics["window_timer"] = self.window_timer.float()
+    if self.cfg.goal_pos_range is not None:
+      self.metrics["pos_error"] = self.pos_error()
     self._visualization.update_status_gui(
       num_envs=self.num_envs,
       policy_status_for_env=self._policy_status_for_env,
@@ -122,6 +143,11 @@ class InHandReorientCommand(CommandTerm):
     tag_rel_goal = random_quat_uniform(n, self.device)
     tag_quat_w = self.robot.data.site_pose_w[env_ids, self.tag_site_id, 3:7]
     self.goal_quat_w[env_ids] = quat_mul(tag_quat_w, tag_rel_goal)
+    if self.cfg.goal_pos_range is not None:
+      u = torch.rand(n, 3, device=self.device)
+      self.goal_pos_tag[env_ids] = self._goal_pos_lo + u * (
+        self._goal_pos_hi - self._goal_pos_lo
+      )
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     self._sample_goal_in_world(env_ids)
@@ -147,6 +173,9 @@ class InHandReorientCommand(CommandTerm):
       self.object.data.root_link_quat_w[selected], self.goal_quat_w[selected]
     )
     within_threshold = ori_err < self.cfg.success_threshold
+    if self.cfg.pos_success_threshold is not None:
+      pos_err = self.pos_error()[selected]
+      within_threshold = within_threshold & (pos_err < self.cfg.pos_success_threshold)
 
     approaching_mask = ~self.in_success_window[selected]
     hold_counter = self.hold_counter[selected]
@@ -231,6 +260,8 @@ class InHandReorientCommand(CommandTerm):
       tag_pose_w=self.robot.data.site_pose_w[:, self.tag_site_id, :],
       object_pos_w=self.object.data.root_link_pos_w,
       goal_quat_w=self.goal_quat_w,
+      goal_pos_w=self.goal_pos_w if self.cfg.goal_pos_range is not None else None,
+      object_quat_w=self.object.data.root_link_quat_w,
       policy_status_for_env=self._policy_status_for_env,
     )
 
@@ -261,6 +292,9 @@ class InHandReorientCommand(CommandTerm):
       )[0].item()
     )
     is_success = ori_error_rad < self.cfg.success_threshold
+    if self.cfg.pos_success_threshold is not None:
+      pos_err = float(self.pos_error()[env_idx].item())
+      is_success = is_success and pos_err < self.cfg.pos_success_threshold
     return ori_error_rad, is_success
 
   @property
@@ -291,6 +325,11 @@ class InHandReorientCommandCfg(CommandTermCfg):
   success_hold_steps: int = 5
   goal_switch_delay: int = 20
   min_goal_interval: float = 0.0
+  # Per-axis (lo, hi) goal-position box in the wrist-tag frame [m]; None keeps
+  # the orientation-only task. lo == hi pins the goal to a single point.
+  goal_pos_range: tuple[tuple[float, float], ...] | None = None
+  # Position gate for success [m]; None leaves success orientation-only.
+  pos_success_threshold: float | None = None
   debug_vis: bool = False
   robot_entity_name: str = "robot"
   palm_body_pattern: str = ".*_palm_link"

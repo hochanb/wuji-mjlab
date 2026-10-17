@@ -85,6 +85,16 @@ def orientation_alignment(
   return tolerance_linear(ori_err, bounds=(0.0, bound), margin=margin)
 
 
+def position_alignment(
+  env,
+  command_name: str = "reorient_command",
+  margin: float = 0.03,
+  bound: float = 0.01,
+) -> torch.Tensor:
+  pos_err = env.command_manager.get_term(command_name).pos_error()
+  return tolerance_linear(pos_err, bounds=(0.0, bound), margin=margin)
+
+
 @curriculum_scaled
 def hand_pose_penalty(
   env,

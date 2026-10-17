@@ -4,9 +4,13 @@
 
 from dataclasses import replace
 
+from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.tasks.registry import register_mjlab_task
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from wuji_mjlab.rl.runner import WujiOnPolicyRunner
+from wuji_mjlab.tasks.reorient import mdp
 
 from .env_cfgs import wuji_hand2_reorient_env_cfg
 from .rsl_rl.ppo import wuji_hand2_reorient_ppo_runner_cfg
@@ -69,5 +73,73 @@ register_mjlab_task(
   env_cfg=_reorient_hand2_50hz_env_cfg(num_envs=8192),
   play_env_cfg=_reorient_hand2_50hz_env_cfg(play=True),
   rl_cfg=_reorient_hand2_50hz_rl_cfg(),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+
+# Goal-position box in the wrist-tag frame [m]: per-axis 10-90th percentile of
+# the cube position reached by the orientation-only 50 Hz policy (model_4999).
+_GOAL_POS_RANGE = ((-0.179, -0.143), (-0.006, 0.019), (-0.006, 0.018))
+# Single goal position: per-axis median of the same rollout distribution.
+_GOAL_POS_FIXED = ((-0.160, -0.160), (0.008, 0.008), (0.005, 0.005))
+_POS_SUCCESS_THRESHOLD = 0.01
+
+
+def _reorient_pos_hand2_50hz_env_cfg(
+  goal_pos_range, num_envs: int = 8192, play: bool = False
+):
+  """50 Hz recipe plus a position goal: success needs orientation and position."""
+  cfg = _reorient_hand2_50hz_env_cfg(num_envs=num_envs, play=play)
+  command = cfg.commands["reorient_command"]
+  command.goal_pos_range = goal_pos_range
+  command.pos_success_threshold = _POS_SUCCESS_THRESHOLD
+
+  policy_terms = cfg.observations["policy"].terms
+  critic_terms = cfg.observations["critic"].terms
+  history_length = policy_terms["cube_pos_in_tag"].history_length
+  params = {"command_name": "reorient_command"}
+  policy_terms["goal_pos_err"] = ObservationTermCfg(
+    func=mdp.goal_pos_err_in_tag,
+    params=params,
+    noise=Unoise(n_min=-0.008, n_max=0.008),
+    history_length=history_length,
+  )
+  critic_terms["goal_pos_err"] = ObservationTermCfg(
+    func=mdp.goal_pos_err_in_tag, params=params, history_length=history_length
+  )
+  critic_terms["goal_pos_err_clean"] = ObservationTermCfg(
+    func=mdp.goal_pos_err_in_tag, params=params
+  )
+
+  cfg.rewards["position_alignment"] = RewardTermCfg(
+    func=mdp.position_alignment,
+    weight=5.0,  # below orientation_alignment (15)
+    params={**params, "bound": 0.01, "margin": 0.03},
+  )
+  return cfg
+
+
+def _reorient_pos_hand2_50hz_rl_cfg(experiment_name: str, run_name: str):
+  cfg = _reorient_hand2_50hz_rl_cfg()
+  return replace(cfg, experiment_name=experiment_name, run_name=run_name)
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientPos_50Hz",
+  env_cfg=_reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_RANGE),
+  play_env_cfg=_reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_RANGE, play=True),
+  rl_cfg=_reorient_pos_hand2_50hz_rl_cfg(
+    "wuji_reorient_hand2_pos", "ReorientPos_Hand2_50Hz"
+  ),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientPosFixed_50Hz",
+  env_cfg=_reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_FIXED),
+  play_env_cfg=_reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_FIXED, play=True),
+  rl_cfg=_reorient_pos_hand2_50hz_rl_cfg(
+    "wuji_reorient_hand2_pos_fixed", "ReorientPosFixed_Hand2_50Hz"
+  ),
   runner_cls=WujiOnPolicyRunner,
 )

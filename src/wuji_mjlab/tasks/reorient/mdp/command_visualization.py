@@ -29,6 +29,11 @@ _TAG_TRIAD_COLORS = (
   (0.9, 0.85, 0.0),
 )
 _GOAL_RGBA = np.array([1.0, 1.0, 1.0, 0.5], dtype=np.float32)
+_GOAL_POS_RGBA = (1.0, 0.6, 0.0, 0.8)
+_GOAL_POS_VIS_RADIUS = 0.006
+_GOAL_PRIMITIVE_RGBA = (1.0, 0.5, 0.0, 0.35)
+_CUBE_TRIAD_LEN = 0.045
+_CUBE_TRIAD_RADIUS = 0.003
 _GHOST_BOX_HALF = np.array([0.027, 0.027, 0.027], dtype=np.float64)
 _WARNED_VISUALIZER_TYPES: set[type] = set()
 
@@ -61,11 +66,15 @@ def reorient_status_color_rgba(success: bool) -> tuple[float, float, float, floa
   return (0.95, 0.2, 0.2, 0.95)
 
 
-def format_reorient_status_markdown(ori_error_rad: float, success: bool) -> str:
+def format_reorient_status_markdown(
+  ori_error_rad: float, success: bool, pos_error_m: float | None = None
+) -> str:
   ori_error_deg = float(np.degrees(ori_error_rad))
+  pos_line = "" if pos_error_m is None else f"- pos_error: {pos_error_m * 100:.2f} cm\n"
   return (
     "### Reorient Policy Status\n"
     f"- ori_error: {ori_error_deg:.1f} deg\n"
+    f"{pos_line}"
     f"- success: {success}\n"
   )
 
@@ -75,6 +84,7 @@ def update_reorient_status_markdown(
   get_env_idx: Callable[[], int],
   num_envs: int,
   policy_status_for_env: Callable[[int], tuple[float, bool]],
+  pos_error_for_env: Callable[[int], float] | None = None,
 ) -> None:
   if num_envs <= 0:
     return
@@ -83,6 +93,7 @@ def update_reorient_status_markdown(
   status_markdown.content = format_reorient_status_markdown(
     ori_error_rad=ori_error_rad,
     success=is_success,
+    pos_error_m=None if pos_error_for_env is None else pos_error_for_env(env_idx),
   )
 
 
@@ -131,6 +142,8 @@ class ReorientCommandVisualization:
   _ghost_resolved: bool = False
   status_markdown: object | None = None
   get_env_idx: Callable[[], int] | None = None
+  # Set when the command carries a position goal; adds pos_error to the status.
+  pos_error_for_env: Callable[[int], float] | None = None
 
   def create_gui(
     self,
@@ -165,6 +178,7 @@ class ReorientCommandVisualization:
       get_env_idx=self.get_env_idx,
       num_envs=num_envs,
       policy_status_for_env=policy_status_for_env,
+      pos_error_for_env=self.pos_error_for_env,
     )
 
   def _ensure_ghost_material(self, mj_model) -> bool:
@@ -206,7 +220,14 @@ class ReorientCommandVisualization:
     object_pos_w: "torch.Tensor",
     goal_quat_w: "torch.Tensor",
     policy_status_for_env: Callable[[int], tuple[float, bool]],
+    goal_pos_w: "torch.Tensor | None" = None,
+    object_quat_w: "torch.Tensor | None" = None,
   ) -> None:
+    """Draw the goal ghost cube.
+
+    With a position goal the ghost sits at the goal pose; otherwise it floats
+    above the live cube and only its orientation is meaningful.
+    """
     draw_reorient_frame_triads(
       visualizer=visualizer,
       num_envs=num_envs,
@@ -214,18 +235,25 @@ class ReorientCommandVisualization:
       tag_pose_w=tag_pose_w,
     )
 
+    def ghost_pos(env_idx: int) -> np.ndarray:
+      if goal_pos_w is not None:
+        return goal_pos_w[env_idx].detach().cpu().numpy()
+      return goal_vis_position_above_object(
+        object_pos_w[env_idx].detach().cpu().numpy()
+      )
+
     context = native_visualization_context(visualizer)
     if context is None:
-      if (
-        not isinstance(visualizer, NullDebugVisualizer)
-        and type(visualizer) not in _WARNED_VISUALIZER_TYPES
-      ):
-        _WARNED_VISUALIZER_TYPES.add(type(visualizer))
-        warnings.warn(
-          f"{type(visualizer).__name__} cannot draw the textured reorient goal; "
-          "use the native MuJoCo viewer.",
-          RuntimeWarning,
-          stacklevel=2,
+      if not isinstance(visualizer, NullDebugVisualizer):
+        self._draw_primitive_goal(
+          visualizer=visualizer,
+          num_envs=num_envs,
+          ghost_pos=ghost_pos,
+          object_pos_w=object_pos_w,
+          object_quat_w=object_quat_w,
+          goal_quat_w=goal_quat_w,
+          goal_pos_w=goal_pos_w,
+          policy_status_for_env=policy_status_for_env,
         )
       return
 
@@ -242,9 +270,7 @@ class ReorientCommandVisualization:
         break
 
       ori_error_rad, is_success = policy_status_for_env(env_idx)
-      vis_pos = goal_vis_position_above_object(
-        object_pos_w[env_idx].detach().cpu().numpy()
-      )
+      vis_pos = ghost_pos(env_idx)
       geom = mj_scene.geoms[mj_scene.ngeom]
       mj_scene.ngeom += 1
       geom.category = mujoco.mjtCatBit.mjCAT_DECOR
@@ -260,6 +286,76 @@ class ReorientCommandVisualization:
       # face direction on a box, so no mesh dataid / texcoords are needed.
       geom.matid = self.ghost_mat_id
 
+      status_pos = vis_pos.copy()
+      status_pos[0] += _STATUS_VIS_X_OFFSET
+      visualizer.add_sphere(
+        center=status_pos,
+        radius=_STATUS_VIS_RADIUS,
+        color=reorient_status_color_rgba(is_success),
+        label=(
+          f"reorient_status_env{env_idx}"
+          f"_err_{np.degrees(ori_error_rad):.1f}deg"
+          f"_success_{is_success}"
+        ),
+      )
+
+  def _draw_primitive_goal(
+    self,
+    *,
+    visualizer: "DebugVisualizer",
+    num_envs: int,
+    ghost_pos: Callable[[int], np.ndarray],
+    object_pos_w: "torch.Tensor",
+    object_quat_w: "torch.Tensor | None",
+    goal_quat_w: "torch.Tensor",
+    goal_pos_w: "torch.Tensor | None",
+    policy_status_for_env: Callable[[int], tuple[float, bool]],
+  ) -> None:
+    """Untextured goal for viewers without MjvScene access (e.g. viser).
+
+    A plain box is rotation-ambiguous, so matching axis triads are drawn on
+    the goal ghost and on the live cube: aligned triads mean aligned cubes.
+    """
+    goal_rot = matrix_from_quat(goal_quat_w).detach().cpu().numpy()
+    cube_rot = (
+      None
+      if object_quat_w is None
+      else matrix_from_quat(object_quat_w).detach().cpu().numpy()
+    )
+    for env_idx in visualizer.get_env_indices(num_envs):
+      ori_error_rad, is_success = policy_status_for_env(env_idx)
+      vis_pos = ghost_pos(env_idx)
+      visualizer.add_box(
+        center=vis_pos,
+        size=self.ghost_box_size,
+        mat=goal_rot[env_idx],
+        color=_GOAL_PRIMITIVE_RGBA,
+        label=f"reorient_goal_env{env_idx}",
+      )
+      visualizer.add_frame(
+        position=vis_pos,
+        rotation_matrix=goal_rot[env_idx],
+        scale=_CUBE_TRIAD_LEN,
+        axis_radius=_CUBE_TRIAD_RADIUS,
+        alpha=0.6,
+        label=f"reorient_goal_frame_env{env_idx}",
+      )
+      if cube_rot is not None:
+        visualizer.add_frame(
+          position=object_pos_w[env_idx].detach().cpu().numpy(),
+          rotation_matrix=cube_rot[env_idx],
+          scale=_CUBE_TRIAD_LEN,
+          axis_radius=_CUBE_TRIAD_RADIUS,
+          alpha=1.0,
+          label=f"reorient_cube_frame_env{env_idx}",
+        )
+      if goal_pos_w is not None:
+        visualizer.add_sphere(
+          center=vis_pos,
+          radius=_GOAL_POS_VIS_RADIUS,
+          color=_GOAL_POS_RGBA,
+          label=f"reorient_goal_pos_env{env_idx}",
+        )
       status_pos = vis_pos.copy()
       status_pos[0] += _STATUS_VIS_X_OFFSET
       visualizer.add_sphere(
