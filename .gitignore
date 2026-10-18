@@ -107,3 +107,6 @@ tests/debug/
 # Local training scratch (untracked), per task.
 src/wuji_mjlab/tasks/*/train_scripts/
 .k8s/
+
+# Local scratch data (downloaded meshes, tool caches)
+tmp/
