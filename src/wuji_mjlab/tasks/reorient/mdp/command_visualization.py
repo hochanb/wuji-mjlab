@@ -32,6 +32,7 @@ _GOAL_RGBA = np.array([1.0, 1.0, 1.0, 0.5], dtype=np.float32)
 _GOAL_POS_RGBA = (1.0, 0.6, 0.0, 0.8)
 _GOAL_POS_VIS_RADIUS = 0.006
 _GOAL_PRIMITIVE_RGBA = (1.0, 0.5, 0.0, 0.35)
+_GHOST_PART_ALPHA = 0.35
 _CUBE_TRIAD_LEN = 0.045
 _CUBE_TRIAD_RADIUS = 0.003
 _GHOST_BOX_HALF = np.array([0.027, 0.027, 0.027], dtype=np.float64)
@@ -134,6 +135,54 @@ def draw_reorient_frame_triads(
     )
 
 
+@dataclass(frozen=True)
+class GhostPart:
+  """One visual primitive of the object, in the object's body frame."""
+
+  kind: str  # "box" | "cylinder"
+  size: np.ndarray  # box half extents | (radius, half length)
+  pos: np.ndarray
+  rot: np.ndarray  # 3x3
+  rgba: tuple[float, float, float, float]
+
+
+def object_ghost_parts(mj_model, geom_ids) -> list[GhostPart]:
+  """Visual (group 2) box/cylinder geoms of an object, for a goal ghost.
+
+  Textured geoms (e.g. the ArUco cube) get the plain goal tint; others keep
+  their colour. Other geom types (meshes) are skipped.
+  """
+  import mujoco
+
+  kinds = {
+    int(mujoco.mjtGeom.mjGEOM_BOX): "box",
+    int(mujoco.mjtGeom.mjGEOM_CYLINDER): "cylinder",
+  }
+  parts = []
+  for gid in (int(g) for g in geom_ids):
+    kind = kinds.get(int(mj_model.geom_type[gid]))
+    if kind is None or mj_model.geom_group[gid] != 2:
+      continue
+    rot = np.empty(9)
+    mujoco.mju_quat2Mat(rot, mj_model.geom_quat[gid])
+    if mj_model.geom_matid[gid] >= 0:
+      rgba = _GOAL_PRIMITIVE_RGBA
+    else:
+      r, g, b, _ = (float(c) for c in mj_model.geom_rgba[gid])
+      rgba = (r, g, b, _GHOST_PART_ALPHA)
+    size = mj_model.geom_size[gid].copy()
+    parts.append(
+      GhostPart(
+        kind=kind,
+        size=size if kind == "box" else size[:2],
+        pos=mj_model.geom_pos[gid].copy(),
+        rot=rot.reshape(3, 3),
+        rgba=rgba,
+      )
+    )
+  return parts
+
+
 @dataclass
 class ReorientCommandVisualization:
   entity_name: str
@@ -144,6 +193,9 @@ class ReorientCommandVisualization:
   get_env_idx: Callable[[], int] | None = None
   # Set when the command carries a position goal; adds pos_error to the status.
   pos_error_for_env: Callable[[int], float] | None = None
+  # The object's own primitives; when set, viewers without MjvScene access draw
+  # the goal as a translucent copy of the object instead of a plain box.
+  ghost_parts: list[GhostPart] | None = None
 
   def create_gui(
     self,
@@ -223,10 +275,13 @@ class ReorientCommandVisualization:
     goal_pos_w: "torch.Tensor | None" = None,
     object_quat_w: "torch.Tensor | None" = None,
   ) -> None:
-    """Draw the goal ghost cube.
+    """Draw the goal ghost.
 
-    With a position goal the ghost sits at the goal pose; otherwise it floats
-    above the live cube and only its orientation is meaningful.
+    With a position goal the ghost sits at the goal pose. Without one, the
+    translucent primitive ghost (viser etc.) overlaps the live object so the
+    orientation mismatch reads directly; the textured native ghost floats
+    above the live object instead, since an overlapping textured box would
+    z-fight with the cube once aligned.
     """
     draw_reorient_frame_triads(
       visualizer=visualizer,
@@ -242,13 +297,18 @@ class ReorientCommandVisualization:
         object_pos_w[env_idx].detach().cpu().numpy()
       )
 
+    def overlay_pos(env_idx: int) -> np.ndarray:
+      if goal_pos_w is not None:
+        return goal_pos_w[env_idx].detach().cpu().numpy()
+      return object_pos_w[env_idx].detach().cpu().numpy()
+
     context = native_visualization_context(visualizer)
     if context is None:
       if not isinstance(visualizer, NullDebugVisualizer):
         self._draw_primitive_goal(
           visualizer=visualizer,
           num_envs=num_envs,
-          ghost_pos=ghost_pos,
+          ghost_pos=overlay_pos,
           object_pos_w=object_pos_w,
           object_quat_w=object_quat_w,
           goal_quat_w=goal_quat_w,
@@ -322,16 +382,21 @@ class ReorientCommandVisualization:
       if object_quat_w is None
       else matrix_from_quat(object_quat_w).detach().cpu().numpy()
     )
-    for env_idx in visualizer.get_env_indices(num_envs):
+    # Every env, like the frame triads and the native ghost (not only the env
+    # selected in the viewer GUI).
+    for env_idx in goal_vis_env_indices(num_envs):
       ori_error_rad, is_success = policy_status_for_env(env_idx)
       vis_pos = ghost_pos(env_idx)
-      visualizer.add_box(
-        center=vis_pos,
-        size=self.ghost_box_size,
-        mat=goal_rot[env_idx],
-        color=_GOAL_PRIMITIVE_RGBA,
-        label=f"reorient_goal_env{env_idx}",
-      )
+      if self.ghost_parts:
+        self._draw_ghost_parts(visualizer, env_idx, vis_pos, goal_rot[env_idx])
+      else:
+        visualizer.add_box(
+          center=vis_pos,
+          size=self.ghost_box_size,
+          mat=goal_rot[env_idx],
+          color=_GOAL_PRIMITIVE_RGBA,
+          label=f"reorient_goal_env{env_idx}",
+        )
       visualizer.add_frame(
         position=vis_pos,
         rotation_matrix=goal_rot[env_idx],
@@ -368,3 +433,30 @@ class ReorientCommandVisualization:
           f"_success_{is_success}"
         ),
       )
+
+  def _draw_ghost_parts(
+    self,
+    visualizer: "DebugVisualizer",
+    env_idx: int,
+    origin: np.ndarray,
+    rot: np.ndarray,
+  ) -> None:
+    """Translucent copy of the object's primitives at the goal pose."""
+    for i, part in enumerate(self.ghost_parts or ()):
+      center = origin + rot @ part.pos
+      mat = rot @ part.rot
+      label = f"reorient_goal_env{env_idx}_part{i}"
+      if part.kind == "box":
+        visualizer.add_box(
+          center=center, size=part.size, mat=mat, color=part.rgba, label=label
+        )
+      else:
+        radius, half_len = part.size
+        axis = mat[:, 2] * half_len
+        visualizer.add_cylinder(
+          start=center - axis,
+          end=center + axis,
+          radius=radius,
+          color=part.rgba,
+          label=label,
+        )

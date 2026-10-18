@@ -23,6 +23,7 @@ from wuji_mjlab.tasks.reorient.config.wuji_hand.env_cfgs import (
 )
 from wuji_mjlab.tasks.reorient.mdp.cage import CageEscapePenalty
 from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
+  GhostPart,
   ReorientCommandVisualization,
   draw_reorient_frame_triads,
   format_reorient_status_markdown,
@@ -322,15 +323,19 @@ class _PrimitiveVisualizer(_StubVisualizer):
     super().__init__()
     self.boxes = []
     self.spheres = []
+    self.cylinders = []
 
   def get_env_indices(self, num_envs: int) -> list[int]:
-    return list(range(num_envs))
+    return [0]  # like viser with "All envs" off: only the GUI-selected env
 
   def add_box(self, center, size, mat, color, label=None) -> None:
     self.boxes.append({"center": np.asarray(center), "mat": np.asarray(mat)})
 
   def add_sphere(self, center, radius, color, label=None) -> None:
     self.spheres.append({"center": np.asarray(center), "label": label})
+
+  def add_cylinder(self, start, end, radius, color, label=None) -> None:
+    self.cylinders.append({"start": np.asarray(start), "end": np.asarray(end)})
 
 
 def test_non_native_visualizer_draws_primitive_goal(native_play_env):
@@ -341,11 +346,9 @@ def test_non_native_visualizer_draws_primitive_goal(native_play_env):
     command._debug_vis_impl(visualizer)
   assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
   assert len(visualizer.boxes) == command.num_envs
-  # Orientation-only goal: ghost floats above the live cube with the goal rotation.
+  # Orientation-only goal: ghost overlaps the live cube with the goal rotation.
   cube_pos = command.object.data.root_link_pos_w[0].cpu().numpy()
-  np.testing.assert_allclose(
-    visualizer.boxes[0]["center"], goal_vis_position_above_object(cube_pos), atol=1e-5
-  )
+  np.testing.assert_allclose(visualizer.boxes[0]["center"], cube_pos, atol=1e-5)
   np.testing.assert_allclose(
     visualizer.boxes[0]["mat"],
     matrix_from_quat(command.goal_quat_w[:1]).cpu().numpy()[0],
@@ -445,3 +448,73 @@ def test_cage_debug_switch_changes_geometry_without_reward_state(native_play_env
       torch.testing.assert_close(cage._penalty_counter, counter, rtol=0, atol=0)
   finally:
     cage._debug_vis_enabled = True
+
+
+def test_goal_ghost_draws_object_parts_at_goal_pose():
+  visualization = ReorientCommandVisualization(entity_name="object")
+  visualization.ghost_parts = [
+    GhostPart(
+      "box",
+      np.array([0.01, 0.02, 0.03]),
+      np.array([0.05, 0.0, 0.0]),
+      np.eye(3),
+      (1.0, 0.0, 0.0, 0.35),
+    ),
+    GhostPart(
+      "cylinder", np.array([0.005, 0.04]), np.zeros(3), np.eye(3), (0.0, 1.0, 0.0, 0.35)
+    ),
+  ]
+  visualizer = _PrimitiveVisualizer()
+  pose = torch.tensor([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
+  goal_pos = torch.tensor([[0.1, 0.2, 0.3]])
+  # 90 deg about z: the box offset +x lands on +y, the cylinder axis stays z.
+  goal_quat = torch.tensor([[np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)]])
+  visualization.draw_debug_visuals(
+    visualizer=visualizer,
+    num_envs=1,
+    palm_pose_w=pose,
+    tag_pose_w=pose,
+    object_pos_w=pose[:, :3],
+    goal_quat_w=goal_quat,
+    policy_status_for_env=lambda _: (0.0, False),
+    goal_pos_w=goal_pos,
+    object_quat_w=pose[:, 3:],
+  )
+  assert len(visualizer.boxes) == 1 and len(visualizer.cylinders) == 1
+  np.testing.assert_allclose(visualizer.boxes[0]["center"], [0.1, 0.25, 0.3], atol=1e-6)
+  np.testing.assert_allclose(
+    visualizer.cylinders[0]["start"], [0.1, 0.2, 0.26], atol=1e-6
+  )
+  np.testing.assert_allclose(
+    visualizer.cylinders[0]["end"], [0.1, 0.2, 0.34], atol=1e-6
+  )
+
+
+def test_cube_task_ghost_is_one_tinted_box(native_play_env):
+  parts = native_play_env.command_manager.get_term(
+    "reorient_command"
+  )._visualization.ghost_parts
+  assert [p.kind for p in parts] == ["box"]
+  np.testing.assert_allclose(parts[0].size, [0.027, 0.027, 0.027], atol=1e-4)
+
+
+def test_goal_ghost_drawn_for_every_env_not_only_selected():
+  visualization = ReorientCommandVisualization(entity_name="object")
+  visualizer = _PrimitiveVisualizer()  # selects env 0 only
+  n = 3
+  pose = torch.tensor([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]]).repeat(n, 1)
+  pose[:, 0] = torch.arange(n, dtype=torch.float32)
+  visualization.draw_debug_visuals(
+    visualizer=visualizer,
+    num_envs=n,
+    palm_pose_w=pose,
+    tag_pose_w=pose,
+    object_pos_w=pose[:, :3],
+    goal_quat_w=pose[:, 3:],
+    policy_status_for_env=lambda _: (0.0, False),
+    goal_pos_w=pose[:, :3],
+    object_quat_w=pose[:, 3:],
+  )
+  np.testing.assert_allclose(
+    sorted(b["center"][0] for b in visualizer.boxes), [0, 1, 2]
+  )

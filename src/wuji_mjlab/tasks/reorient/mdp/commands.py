@@ -12,6 +12,7 @@ from mjlab.utils.lab_api.math import quat_apply, quat_error_magnitude, quat_mul
 
 from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
   ReorientCommandVisualization,
+  object_ghost_parts,
 )
 from wuji_mjlab.utils.math import random_quat_uniform
 
@@ -98,6 +99,13 @@ class InHandReorientCommand(CommandTerm):
       self.metrics["pos_error"] = torch.zeros(self.num_envs, device=self.device)
 
     self._visualization = ReorientCommandVisualization(entity_name=self.cfg.entity_name)
+    # Without a compiled model (lightweight test envs) the plain box ghost is used.
+    sim = getattr(env, "sim", None)
+    indexing = getattr(self.object, "indexing", None)
+    if sim is not None and indexing is not None:
+      self._visualization.ghost_parts = object_ghost_parts(
+        sim.mj_model, indexing.geom_ids.tolist()
+      )
     if cfg.goal_pos_range is not None:
       self._visualization.pos_error_for_env = lambda i: float(self.pos_error()[i])
 
