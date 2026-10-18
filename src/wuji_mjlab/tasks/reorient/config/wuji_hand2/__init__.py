@@ -4,15 +4,23 @@
 
 from dataclasses import replace
 
+from mjlab.envs.mdp.events import reset_root_state_uniform
+from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.sensor import ContactMatch
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
+from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
+  get_compound_object_cfg,
+)
 from wuji_mjlab.rl.runner import WujiOnPolicyRunner
 from wuji_mjlab.tasks.reorient import mdp
 
 from .env_cfgs import wuji_hand2_reorient_env_cfg
+from .hand2_constants import REORIENT_HAND2_CUBE_INIT_POS
 from .rsl_rl.ppo import wuji_hand2_reorient_ppo_runner_cfg
 
 
@@ -140,6 +148,69 @@ register_mjlab_task(
   play_env_cfg=_reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_FIXED, play=True),
   rl_cfg=_reorient_pos_hand2_50hz_rl_cfg(
     "wuji_reorient_hand2_pos_fixed", "ReorientPosFixed_Hand2_50Hz"
+  ),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+
+# Stapler (compound primitive object). Dropped from 4 cm above the cube's start in
+# its upright pose: a 13 cm object at a uniformly random orientation would start
+# interpenetrating the hand.
+_STAPLER_INIT_LIFT = 0.04
+
+
+def _with_stapler(cfg):
+  """Swap the cube for the stapler in a reorient env cfg."""
+  x, y, z = REORIENT_HAND2_CUBE_INIT_POS["right"]
+  stapler = get_compound_object_cfg("stapler")
+  stapler.init_state.pos = (x, y, z + _STAPLER_INIT_LIFT)
+  stapler.init_state.rot = (1.0, 0.0, 0.0, 0.0)
+  cfg.scene.entities["object"] = stapler
+  # The cube sensors match the object geom named "cube"; on a multi-geom object
+  # that is only the first part, so match the whole object body instead.
+  for sensor in cfg.scene.sensors:
+    if sensor.name == "tip_object_contact":
+      sensor.secondary = ContactMatch(mode="body", pattern="cube", entity="object")
+  # Size DR scales geom extents in place, which would pull the parts apart.
+  cfg.events.pop("object_size", None)
+  cfg.events["reset_object_pose"] = EventTermCfg(
+    func=reset_root_state_uniform,
+    mode="reset",
+    params={
+      "pose_range": {k: (-0.01, 0.01) for k in ("x", "y", "z")},
+      "velocity_range": {},
+      "asset_cfg": SceneEntityCfg("object"),
+    },
+  )
+  return cfg
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientStapler_50Hz",
+  env_cfg=_with_stapler(_reorient_hand2_50hz_env_cfg(num_envs=8192)),
+  play_env_cfg=_with_stapler(_reorient_hand2_50hz_env_cfg(play=True)),
+  rl_cfg=_reorient_pos_hand2_50hz_rl_cfg(
+    "wuji_reorient_hand2_stapler", "ReorientStapler_Hand2_50Hz"
+  ),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+# Stapler goal-position box: the cube box's size (_GOAL_POS_RANGE), re-centred on
+# the median tag-frame position where the stapler settles on the idle hand.
+_STAPLER_REST_POS = (-0.130, -0.006, 0.022)
+_STAPLER_GOAL_POS_RANGE = tuple(
+  (c - (hi - lo) / 2, c + (hi - lo) / 2)
+  for c, (lo, hi) in zip(_STAPLER_REST_POS, _GOAL_POS_RANGE, strict=True)
+)
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientStaplerPos_50Hz",
+  env_cfg=_with_stapler(_reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE)),
+  play_env_cfg=_with_stapler(
+    _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True)
+  ),
+  rl_cfg=_reorient_pos_hand2_50hz_rl_cfg(
+    "wuji_reorient_hand2_stapler_pos", "ReorientStaplerPos_Hand2_50Hz"
   ),
   runner_cls=WujiOnPolicyRunner,
 )
