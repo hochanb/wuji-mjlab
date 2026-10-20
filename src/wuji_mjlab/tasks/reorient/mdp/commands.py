@@ -157,7 +157,12 @@ class InHandReorientCommand(CommandTerm):
     relative to the wrist (see ``goal_quat_w``).
     """
     n = len(env_ids)
-    self.goal_quat_tag[env_ids] = random_quat_uniform(n, self.device)
+    if self.cfg.goal_quat_tag_fixed is not None:
+      self.goal_quat_tag[env_ids] = torch.tensor(
+        self.cfg.goal_quat_tag_fixed, device=self.device
+      )
+    else:
+      self.goal_quat_tag[env_ids] = random_quat_uniform(n, self.device)
     if self.cfg.goal_pos_range is not None:
       u = torch.rand(n, 3, device=self.device)
       self.goal_pos_tag[env_ids] = self._goal_pos_lo + u * (
@@ -345,6 +350,8 @@ class InHandReorientCommandCfg(CommandTermCfg):
   goal_pos_range: tuple[tuple[float, float], ...] | None = None
   # Position gate for success [m]; None leaves success orientation-only.
   pos_success_threshold: float | None = None
+  # Fixed goal orientation in the wrist-tag frame (wxyz); None samples goals.
+  goal_quat_tag_fixed: tuple[float, float, float, float] | None = None
   debug_vis: bool = False
   robot_entity_name: str = "robot"
   palm_body_pattern: str = ".*_palm_link"

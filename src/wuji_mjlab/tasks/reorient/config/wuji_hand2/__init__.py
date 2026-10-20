@@ -332,3 +332,46 @@ register_mjlab_task(
   ),
   runner_cls=WujiOnPolicyRunner,
 )
+
+
+# Fixed stapler goal: lying across the palm (long axis near the palm width,
+# base towards the palm), seated slightly diagonally. Built from the crosswise
+# pose (centred laterally at the along-finger offset where the stapler settles
+# lengthwise on the idle hand, base 2 mm above the palm collision surface) by
+# moving -2 cm along the object's y axis, 0.6 cm down its z axis (the palm
+# normal) and turning +10 deg about its z axis. Tag frame.
+_STAPLER_CROSSWISE_POS = (-0.1076, -0.0006, 0.0011)
+_STAPLER_CROSSWISE_QUAT = (0.6106, 0.0, 0.0, 0.7919)
+
+
+def _with_fixed_goal(cfg, pos, quat):
+  command = cfg.commands["reorient_command"]
+  command.goal_pos_range = tuple((c, c) for c in pos)
+  command.goal_quat_tag_fixed = quat
+  return cfg
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientStaplerFixedGoalWrist_50Hz",
+  env_cfg=_with_fixed_goal(
+    _with_wrist(
+      _with_stapler(_reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE))
+    ),
+    _STAPLER_CROSSWISE_POS,
+    _STAPLER_CROSSWISE_QUAT,
+  ),
+  play_env_cfg=_with_fixed_goal(
+    _with_wrist(
+      _with_stapler(
+        _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True)
+      )
+    ),
+    _STAPLER_CROSSWISE_POS,
+    _STAPLER_CROSSWISE_QUAT,
+  ),
+  rl_cfg=_wrist_rl_cfg(
+    "wuji_reorient_hand2_stapler_fixed_goal_wrist",
+    "ReorientStaplerFixedGoalWrist_Hand2_50Hz",
+  ),
+  runner_cls=WujiOnPolicyRunner,
+)
