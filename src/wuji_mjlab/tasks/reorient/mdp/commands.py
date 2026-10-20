@@ -43,8 +43,11 @@ class InHandReorientCommand(CommandTerm):
       )
     self.tag_site_id = int(tag_ids[0])
 
-    self.goal_quat_w = torch.zeros(self.num_envs, 4, device=self.device)
-    self.goal_quat_w[:, 0] = 1.0
+    # Goal pose lives in the wrist-tag frame: the task is to bring the object to
+    # a pose relative to the wrist, so success, rewards and observations all see
+    # the wrist-local object transform. Wrist motion (when actuated) only helps.
+    self.goal_quat_tag = torch.zeros(self.num_envs, 4, device=self.device)
+    self.goal_quat_tag[:, 0] = 1.0
 
     # Optional position goal, stored in the wrist-tag frame (deploy semantics).
     self.goal_pos_tag = torch.zeros(self.num_envs, 3, device=self.device)
@@ -118,6 +121,12 @@ class InHandReorientCommand(CommandTerm):
     return self.goal_quat_w
 
   @property
+  def goal_quat_w(self) -> torch.Tensor:
+    """World goal orientation from the current wrist-tag pose."""
+    tag_quat_w = self.robot.data.site_pose_w[:, self.tag_site_id, 3:7]
+    return quat_mul(tag_quat_w, self.goal_quat_tag)
+
+  @property
   def goal_pos_w(self) -> torch.Tensor:
     tag_pose = self.robot.data.site_pose_w[:, self.tag_site_id]
     return tag_pose[:, :3] + quat_apply(tag_pose[:, 3:7], self.goal_pos_tag)
@@ -141,16 +150,14 @@ class InHandReorientCommand(CommandTerm):
     )
 
   def _sample_goal_in_world(self, env_ids: torch.Tensor) -> None:
-    """Sample new goal_quat_w for the given envs.
+    """Sample a new goal for the given envs, in the wrist-tag frame.
 
-    Goal is drawn uniformly on SO(3) in tag frame to match deploy semantics
-    (the deploy side samples goal_quat directly in tag frame without any
-    wrist transform).
+    Orientation is uniform on SO(3) in the tag frame, matching deploy semantics
+    (the deploy side samples goal_quat directly in tag frame); it stays fixed
+    relative to the wrist (see ``goal_quat_w``).
     """
     n = len(env_ids)
-    tag_rel_goal = random_quat_uniform(n, self.device)
-    tag_quat_w = self.robot.data.site_pose_w[env_ids, self.tag_site_id, 3:7]
-    self.goal_quat_w[env_ids] = quat_mul(tag_quat_w, tag_rel_goal)
+    self.goal_quat_tag[env_ids] = random_quat_uniform(n, self.device)
     if self.cfg.goal_pos_range is not None:
       u = torch.rand(n, 3, device=self.device)
       self.goal_pos_tag[env_ids] = self._goal_pos_lo + u * (
