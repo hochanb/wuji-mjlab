@@ -121,7 +121,7 @@ def main() -> None:
       ) from e
     raise
   robot = env.scene["robot"]
-  action_term = env.action_manager.get_term("joint_pos")
+  action_term = env.action_manager.get_term("finger_joint_pos")
   target_ids = action_term._target_ids
   cmd = env.command_manager.get_term("reorient_command")
   print(

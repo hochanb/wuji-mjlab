@@ -128,7 +128,7 @@ def test_initial_action_target_matches_default_pose(generation: str) -> None:
   )
   try:
     torch.testing.assert_close(
-      env.action_manager.get_term("joint_pos").processed_action,
+      env.action_manager.get_term("finger_joint_pos").processed_action,
       env.scene["robot"].data.default_joint_pos,
     )
   finally:
@@ -184,7 +184,7 @@ def test_reset_restores_target_and_entire_qpos_error_history(
 ):
   env = play_env
   robot = env.scene["robot"]
-  action = env.action_manager.get_term("joint_pos")
+  action = env.action_manager.get_term("finger_joint_pos")
   if previous_episode:
     env.episode_length_buf.fill_(action._warmup_steps)
     action.process_actions(torch.full((2, 20), 0.8))
@@ -217,7 +217,7 @@ def test_partial_env_reset_preserves_other_world_command_and_target(play_env):
   env = play_env
   env.reset(seed=20260927)
   command = env.command_manager.get_term("reorient_command")
-  action = env.action_manager.get_term("joint_pos")
+  action = env.action_manager.get_term("finger_joint_pos")
   env.episode_length_buf.fill_(action._warmup_steps)
   action.process_actions(torch.full((2, 20), 0.8))
   target_before = action.processed_action[1].clone()
@@ -242,7 +242,7 @@ def test_torque_saturation_detects_real_bounded_forces(play_env):
   env = play_env
   env.reset(seed=20260927)
   robot = env.scene["robot"]
-  action = env.action_manager.get_term("joint_pos")
+  action = env.action_manager.get_term("finger_joint_pos")
   q = robot.data.soft_joint_pos_limits[:, :, 0] + 0.02
   robot.write_joint_state_to_sim(q, torch.zeros_like(q))
   env.scene.write_data_to_sim()

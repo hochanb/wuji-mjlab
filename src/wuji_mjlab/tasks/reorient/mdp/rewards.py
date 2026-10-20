@@ -109,16 +109,34 @@ def hand_pose_penalty(
   return torch.sum(torch.square(joint_pos - default_pos), dim=-1)
 
 
+FINGER_ACTION = "finger_joint_pos"
+WRIST_ACTION = "wrist_pose"
+
+
+def _action_columns(env, action_name: str) -> slice:
+  """Columns of one action term inside the manager's concatenated action."""
+  manager = env.action_manager
+  start = 0
+  for name, dim in zip(manager.active_terms, manager.action_term_dim, strict=True):
+    if name == action_name:
+      return slice(start, start + dim)
+    start += dim
+  raise KeyError(f"no action term {action_name!r}")
+
+
 @curriculum_scaled
 def action_rate_combined(
   env,
+  action_name: str = FINGER_ACTION,
   curriculum_term: str = "",
   curriculum_min: float = 0.0,
 ) -> torch.Tensor:
+  """First + second difference of one action term's raw actions."""
   del curriculum_term, curriculum_min
-  action = env.action_manager.action
-  prev = env.action_manager.prev_action
-  prev_prev = env.action_manager.prev_prev_action
+  cols = _action_columns(env, action_name)
+  action = env.action_manager.action[:, cols]
+  prev = env.action_manager.prev_action[:, cols]
+  prev_prev = env.action_manager.prev_prev_action[:, cols]
 
   first_order = torch.sum(torch.square(action - prev), dim=-1)
   second_order = torch.sum(torch.square(action - 2.0 * prev + prev_prev), dim=-1)
@@ -274,8 +292,16 @@ def drop_penalty_sparse(
 
 
 class ActionHighFreqPenalty(ManagerTermBase):
+  """Second difference (jerk) of one action term's ``processed_action``.
+
+  ``action_name`` selects the term: the finger joint targets by default, or the
+  wrist servo targets (normalised by their limits).
+  """
+
   def __init__(self, cfg, env):
     super().__init__(env)
+    params = getattr(cfg, "params", None) or {}
+    self._action_name = params.get("action_name", FINGER_ACTION)
     self._c1: torch.Tensor | None = None
     self._c2: torch.Tensor | None = None
     self._age: torch.Tensor | None = None
@@ -292,8 +318,8 @@ class ActionHighFreqPenalty(ManagerTermBase):
       self._c2[env_ids] = 0.0
       self._age[env_ids] = 0
 
-  def __call__(self, env) -> torch.Tensor:
-    c = env.action_manager.get_term("joint_pos").processed_action
+  def __call__(self, env, **_params) -> torch.Tensor:
+    c = env.action_manager.get_term(self._action_name).processed_action
     if self._c1 is None:
       self._c1 = torch.zeros_like(c)
       self._c2 = torch.zeros_like(c)
@@ -305,3 +331,21 @@ class ActionHighFreqPenalty(ManagerTermBase):
     self._c1 = c.clone()
     self._age = self._age + 1
     return penalty
+
+
+def wrist_pose_penalty(env, action_name: str = WRIST_ACTION) -> torch.Tensor:
+  """Squared wrist offset from the mount pose, normalised by the joint limits."""
+  offset = env.action_manager.get_term(action_name).wrist_offset_normalized
+  return torch.sum(torch.square(offset), dim=-1)
+
+
+def action_out_of_bounds(
+  env, action_name: str = FINGER_ACTION, bound: float = 1.0
+) -> torch.Tensor:
+  """Squared excess of one action term's raw actions beyond ``[-bound, bound]``.
+
+  The env clips actions to that range, so without this term a policy mean that
+  drifts outside it gets no gradient back and its std can grow unchecked.
+  """
+  raw = env.action_manager.get_term(action_name).raw_action
+  return torch.sum(torch.square(torch.relu(raw.abs() - bound)), dim=-1)

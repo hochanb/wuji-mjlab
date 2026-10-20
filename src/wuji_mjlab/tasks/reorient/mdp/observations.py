@@ -30,6 +30,16 @@ def tag_pose_w(robot: Entity, site_ids) -> tuple[torch.Tensor, torch.Tensor]:
   return pose[..., :3], pose[..., 3:7]
 
 
+def _target_columns(term, asset: Entity, joint_ids) -> torch.Tensor | slice:
+  target_ids = [int(i) for i in torch.as_tensor(term._target_ids).flatten().tolist()]
+  if isinstance(joint_ids, slice):
+    joint_ids = list(range(asset.num_joints))[joint_ids]
+  joint_ids = [int(i) for i in torch.as_tensor(joint_ids).flatten().tolist()]
+  if joint_ids == target_ids:
+    return slice(None)
+  return torch.tensor([target_ids.index(j) for j in joint_ids], device=term.device)
+
+
 def joint_pos_target_error(
   env,
   asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
@@ -41,8 +51,11 @@ def joint_pos_target_error(
   half_range = 0.5 * (soft_limits[..., 1] - soft_limits[..., 0])
   normalized_pos = ((joint_pos - center) / (half_range + 1e-6)).clamp(-1.0, 1.0)
 
-  processed = env.action_manager.get_term("joint_pos").processed_action
-  target = processed[:, asset_cfg.joint_ids]
+  term = env.action_manager.get_term("finger_joint_pos")
+  # processed_action has one column per joint the term drives (term order);
+  # pick the columns of the requested joints (e.g. fingers only with a wrist).
+  columns = _target_columns(term, asset, asset_cfg.joint_ids)
+  target = term.processed_action[:, columns]
   normalized_target = ((target - center) / (half_range + 1e-6)).clamp(-1.0, 1.0)
 
   return normalized_pos - normalized_target
@@ -289,3 +302,8 @@ def dr_params_privileged(
   return torch.cat(
     [friction_ratio, mass_ratio, kp_ratio, kd_ratio, damp_ratio, size_ratio], dim=-1
   )
+
+
+def wrist_pose(env, action_name: str = "wrist_pose") -> torch.Tensor:
+  """Applied wrist ``[rotvec, translation]`` offset, normalised by its limits."""
+  return env.action_manager.get_term(action_name).wrist_offset_normalized

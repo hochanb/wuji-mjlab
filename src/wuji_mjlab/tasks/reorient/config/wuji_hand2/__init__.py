@@ -3,7 +3,9 @@
 """Wuji Hand 2 reorient task registration (right hand only)."""
 
 from dataclasses import replace
+from functools import partial
 
+from mjlab.actuator import XmlActuatorCfg
 from mjlab.envs.mdp.events import reset_root_state_uniform
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
@@ -22,6 +24,13 @@ from wuji_mjlab.tasks.reorient import mdp
 from .env_cfgs import wuji_hand2_reorient_env_cfg
 from .hand2_constants import REORIENT_HAND2_CUBE_INIT_POS
 from .rsl_rl.ppo import wuji_hand2_reorient_ppo_runner_cfg
+from .wrist import (
+  WRIST_JOINT_NAMES,
+  WRIST_JOINT_PATTERN,
+  WRIST_MAX_ANGLE,
+  WRIST_MAX_TRANSLATION,
+  add_wrist_joints,
+)
 
 
 def _hand2_rl_cfg(run_name: str, max_iterations: int):
@@ -52,9 +61,9 @@ def _reorient_hand2_50hz_env_cfg(num_envs: int = 8192, play: bool = False):
   """
   cfg = wuji_hand2_reorient_env_cfg(hand_side="right", num_envs=num_envs, play=play)
   cfg.decimation = 2
-  cfg.actions["joint_pos"].ema_alpha = 0.3
-  cfg.rewards["action_rate"].weight = 0.0
-  cfg.rewards["action_hf"].weight = -30.0
+  cfg.actions["finger_joint_pos"].ema_alpha = 0.3
+  cfg.rewards["finger_action_rate"].weight = 0.0
+  cfg.rewards["finger_action_hf"].weight = -30.0
   cfg.commands["reorient_command"].success_hold_steps = 13  # 5 × 2.5
   cfg.commands["reorient_command"].goal_switch_delay = 50  # 20 × 2.5
   # per-step-count reward — ÷2.43 to hold the per-cycle integral (Σ1..N ∝ N²)
@@ -130,6 +139,17 @@ def _reorient_pos_hand2_50hz_env_cfg(
 def _reorient_pos_hand2_50hz_rl_cfg(experiment_name: str, run_name: str):
   cfg = _reorient_hand2_50hz_rl_cfg()
   return replace(cfg, experiment_name=experiment_name, run_name=run_name)
+
+
+# Policy std cap for the wrist tasks: actions are clipped to [-1, 1], so a larger
+# std only adds clipped (bang-bang) samples rather than exploration.
+_WRIST_TASK_STD_RANGE = (0.2, 1.0)
+
+
+def _wrist_rl_cfg(experiment_name: str, run_name: str):
+  cfg = _reorient_pos_hand2_50hz_rl_cfg(experiment_name, run_name)
+  distribution = {**cfg.actor.distribution_cfg, "std_range": _WRIST_TASK_STD_RANGE}
+  return replace(cfg, actor=replace(cfg.actor, distribution_cfg=distribution))
 
 
 register_mjlab_task(
@@ -211,6 +231,104 @@ register_mjlab_task(
   ),
   rl_cfg=_reorient_pos_hand2_50hz_rl_cfg(
     "wuji_reorient_hand2_stapler_pos", "ReorientStaplerPos_Hand2_50Hz"
+  ),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+
+_FINGER_JOINTS = (".*_finger.*_joint.*",)
+
+
+def _with_wrist(cfg):
+  """Add an actuated 6-DoF wrist (+-15 deg about the mount pivot, +-5 cm per axis).
+
+  The wrist joints sit between the mocap mount and the palm (see ``wrist.py``);
+  terms that meant "all hand joints" are narrowed to the finger joints.
+  """
+  robot = cfg.scene.entities["robot"]
+  robot.spec_fn = partial(add_wrist_joints, robot.spec_fn)
+  robot.init_state = replace(
+    robot.init_state,
+    joint_pos={**robot.init_state.joint_pos, WRIST_JOINT_PATTERN: 0.0},
+  )
+  robot.articulation = replace(
+    robot.articulation,
+    actuators=(
+      *robot.articulation.actuators,
+      XmlActuatorCfg(target_names_expr=(WRIST_JOINT_PATTERN,)),
+    ),
+  )
+
+  fingers = SceneEntityCfg("robot", joint_names=_FINGER_JOINTS)
+  finger_actuators = SceneEntityCfg("robot", actuator_names=_FINGER_JOINTS)
+  cfg.actions["finger_joint_pos"].actuator_names = _FINGER_JOINTS
+  cfg.actions["wrist_pose"] = mdp.WristPoseActionCfg(
+    entity_name="robot",
+    joint_names=WRIST_JOINT_NAMES,
+    max_angle=WRIST_MAX_ANGLE,
+    max_translation=WRIST_MAX_TRANSLATION,
+  )
+  for group, names in (
+    ("policy", ("noisy_joint_angles", "qpos_error")),
+    ("critic", ("joint_angles", "qpos_error")),
+  ):
+    for name in names:
+      cfg.observations[group].terms[name].params["asset_cfg"] = fingers
+  cfg.rewards["hand_pose"].params["asset_cfg"] = fingers
+  # Wrist regularisers, lighter than their finger counterparts (-30 / -0.2).
+  cfg.rewards["wrist_action_hf"] = RewardTermCfg(
+    func=mdp.ActionHighFreqPenalty, weight=-10.0, params={"action_name": "wrist_pose"}
+  )
+  cfg.rewards["wrist_pose"] = RewardTermCfg(
+    func=mdp.wrist_pose_penalty, weight=-0.1, params={"action_name": "wrist_pose"}
+  )
+  # Keep the policy mean inside the clipped action range (see action_out_of_bounds).
+  for name in ("finger_joint_pos", "wrist_pose"):
+    key = "finger_action_bound" if name == "finger_joint_pos" else "wrist_action_bound"
+    cfg.rewards[key] = RewardTermCfg(
+      func=mdp.action_out_of_bounds, weight=-1.0, params={"action_name": name}
+    )
+  cfg.rewards["torque"].params["asset_cfg"] = finger_actuators
+  cfg.metrics["torque_saturation_ratio"].params["asset_cfg"] = finger_actuators
+  for name in ("joint_acceleration_rms", "joint_vel_rms"):
+    cfg.metrics[name].params["asset_cfg"] = fingers
+
+  history_length = cfg.observations["policy"].terms["cube_pos_in_tag"].history_length
+  for group in ("policy", "critic"):
+    cfg.observations[group].terms["wrist_pose"] = ObservationTermCfg(
+      func=mdp.wrist_pose, history_length=history_length
+    )
+  return cfg
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientWrist_50Hz",
+  env_cfg=_with_wrist(_reorient_hand2_50hz_env_cfg(num_envs=8192)),
+  play_env_cfg=_with_wrist(_reorient_hand2_50hz_env_cfg(play=True)),
+  rl_cfg=_wrist_rl_cfg("wuji_reorient_hand2_wrist", "ReorientWrist_Hand2_50Hz"),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientPosWrist_50Hz",
+  env_cfg=_with_wrist(_reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_RANGE)),
+  play_env_cfg=_with_wrist(
+    _reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_RANGE, play=True)
+  ),
+  rl_cfg=_wrist_rl_cfg("wuji_reorient_hand2_pos_wrist", "ReorientPosWrist_Hand2_50Hz"),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientStaplerPosWrist_50Hz",
+  env_cfg=_with_wrist(
+    _with_stapler(_reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE))
+  ),
+  play_env_cfg=_with_wrist(
+    _with_stapler(_reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True))
+  ),
+  rl_cfg=_wrist_rl_cfg(
+    "wuji_reorient_hand2_stapler_pos_wrist", "ReorientStaplerPosWrist_Hand2_50Hz"
   ),
   runner_cls=WujiOnPolicyRunner,
 )

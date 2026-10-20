@@ -287,7 +287,7 @@ def build_reorient_sensors(
 def build_reorient_actions() -> dict[str, ActionTermCfg]:
   """Build the action term group."""
   return {
-    "joint_pos": mdp.JointPositionOffsetEMAActionCfg(
+    "finger_joint_pos": mdp.JointPositionOffsetEMAActionCfg(
       entity_name="robot",
       actuator_names=(".*",),
       action_scale=0.5,
@@ -536,11 +536,11 @@ def build_reorient_rewards(
       func=mdp.hand_pose_penalty,
       weight=-0.2,
     ),
-    "action_rate": RewardTermCfg(
+    "finger_action_rate": RewardTermCfg(
       func=mdp.action_rate_combined,
       weight=-1.0,
     ),
-    "action_hf": RewardTermCfg(
+    "finger_action_hf": RewardTermCfg(
       func=mdp.ActionHighFreqPenalty,
       weight=0.0,
     ),
