@@ -10,6 +10,7 @@ from mjlab.viewer import ViewerConfig
 
 from wuji_mjlab.tasks.reorient.reorient_constants import REORIENT_PALM_NORMAL_AXIS
 from wuji_mjlab.tasks.reorient.reorient_terms import (
+  FINGER_ACTION_SCALE,
   HAND1_DISTAL_FINGER_OBJECT_BODY_NAMES,
   HAND1_FINGER_CONTACT_PARAM_GEOMS,
   HAND1_GEOM_SIZE_DR_GEOMS,
@@ -86,6 +87,7 @@ def make_reorient_env_cfg(
   cage_up_axis: int = REORIENT_PALM_NORMAL_AXIS,
   robot_tilt_pivot_in_root: tuple[float, float, float] | None = None,
   robot_pitch_range: tuple[float, float] | None = None,
+  finger_action_scale: float = FINGER_ACTION_SCALE,
 ) -> ManagerBasedRlEnvCfg:
   """Create Reorient task configuration.
 
@@ -94,12 +96,13 @@ def make_reorient_env_cfg(
     geom_size_dr_geoms: Pass ``None`` for mesh collision geoms; ``randomize_geom_size_uniform`` only supports primitives.
     cage_up_axis: Palm-frame axis aligned with the hand's surface normal.
     robot_tilt_pivot_in_root: Wuji Hand 2's mount point in its palm-root frame; reset pitch rotates about world Y through that point when set.
-    robot_pitch_range: Reset tilt range of the hand [rad] (e.g. ``ROBOT_PITCH_RANGE``); ``None`` (default) keeps the hand untilted."""
+    robot_pitch_range: Reset tilt range of the hand [rad] (e.g. ``ROBOT_PITCH_RANGE``); ``None`` (default) keeps the hand untilted.
+    finger_action_scale: Finger action range around the cage pose [rad]; ``CAGE_FINGER_ACTION_SCALE`` (0.5) restores the original, tighter range."""
   observations = build_reorient_observations(
     history_length=_HISTORY_LENGTH,
     tip_body_names=TIP_BODY_NAMES,
   )
-  actions = build_reorient_actions()
+  actions = build_reorient_actions(finger_action_scale)
   commands = build_reorient_commands()
   events = build_reorient_events(
     soft_pad_geoms=soft_pad_geoms,

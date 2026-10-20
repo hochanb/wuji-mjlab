@@ -284,13 +284,23 @@ def build_reorient_sensors(
   )
 
 
-def build_reorient_actions() -> dict[str, ActionTermCfg]:
+# Finger action: target = default (cage) pose + clip(action, -1, 1) * scale, then
+# clamped to the soft joint limits. 1.0 rad lets every finger reach most of its
+# joint range (e.g. the pinky can straighten out of the way); the original
+# 0.5 rad keeps the fingers close to the cage pose and is kept as an option.
+FINGER_ACTION_SCALE = 1.0
+CAGE_FINGER_ACTION_SCALE = 0.5
+
+
+def build_reorient_actions(
+  finger_action_scale: float = FINGER_ACTION_SCALE,
+) -> dict[str, ActionTermCfg]:
   """Build the action term group."""
   return {
     "finger_joint_pos": mdp.JointPositionOffsetEMAActionCfg(
       entity_name="robot",
       actuator_names=(".*",),
-      action_scale=0.5,
+      action_scale=finger_action_scale,
       ema_alpha=0.5,
       warmup_time_s=0.4,
     )
