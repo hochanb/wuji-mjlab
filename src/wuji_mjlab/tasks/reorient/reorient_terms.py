@@ -176,7 +176,7 @@ def build_reorient_observations(
     ),
     "palm_rot_6d": ObservationTermCfg(
       func=mdp.palm_rot_6d_w,
-      params={"asset_cfg": SceneEntityCfg("robot")},
+      params={"asset_cfg": SceneEntityCfg("robot", body_names=(".*_palm_link",))},
     ),
   }
 

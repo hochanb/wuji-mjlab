@@ -144,11 +144,15 @@ def goal_rot_err_6d(
 
 def palm_rot_6d_w(
   env,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
+  asset_cfg: SceneEntityCfg = _DEFAULT_PALM_CFG,
 ) -> torch.Tensor:
-  """Palm (robot root) orientation as 6D rotation in world frame."""
+  """Palm body orientation as 6D rotation in world frame.
+
+  Reads the palm body, not the entity root: with an actuated wrist the root is
+  the mount and no longer moves with the palm.
+  """
   asset: Entity = env.scene[asset_cfg.name]
-  palm_quat_w = asset.data.root_link_quat_w
+  palm_quat_w = asset.data.body_link_quat_w[:, asset_cfg.body_ids[0]]
   rot = matrix_from_quat(palm_quat_w)
   return rot.reshape(*rot.shape[:-2], 9)[..., 3:]
 
