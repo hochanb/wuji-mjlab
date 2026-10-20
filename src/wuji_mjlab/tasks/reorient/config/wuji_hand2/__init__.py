@@ -7,6 +7,7 @@ from functools import partial
 
 from mjlab.actuator import XmlActuatorCfg
 from mjlab.envs.mdp.events import reset_root_state_uniform
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -297,6 +298,16 @@ def _with_wrist(cfg):
   for group in ("policy", "critic"):
     cfg.observations[group].terms["wrist_pose"] = ObservationTermCfg(
       func=mdp.wrist_pose, history_length=history_length
+    )
+  # Fingers first: the wrist range and the goal rotation both start small and
+  # grow with success (with a time floor). Play/eval clears curricula, so both
+  # run at full range there. Curriculum entries are absent in play cfgs.
+  if cfg.curriculum:
+    cfg.curriculum["wrist_range"] = CurriculumTermCfg(
+      func=mdp.wrist_range_curriculum, params={"action_name": "wrist_pose"}
+    )
+    cfg.curriculum["goal_rotation"] = CurriculumTermCfg(
+      func=mdp.goal_rotation_curriculum, params={"command_name": "reorient_command"}
     )
   return cfg
 

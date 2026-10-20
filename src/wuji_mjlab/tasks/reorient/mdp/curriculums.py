@@ -2,6 +2,8 @@
 # Copyright 2026 Wuji Technology Co., Ltd.
 from __future__ import annotations
 
+import math
+
 import torch
 
 from wuji_mjlab.tasks.reorient.mdp._env_utils import resolve_env_ids
@@ -11,8 +13,10 @@ __all__ = [
   "adaptive_episode_curriculum",
   "get_curriculum_value",
   "get_linear_progress",
+  "goal_rotation_curriculum",
   "reorient_success_curriculum",
   "resolve_env_ids",
+  "wrist_range_curriculum",
 ]
 
 
@@ -120,3 +124,108 @@ def adaptive_episode_curriculum(
     "target_steps": float(target_steps),
     "delta": delta,
   }
+
+
+def _success_level(
+  env,
+  env_ids,
+  key: str,
+  command_name: str,
+  count_threshold: int,
+  promote_frac: float,
+  demote_frac: float,
+  step: float,
+  floor_warmup_frac: float,
+  floor_rampup_frac: float,
+) -> dict[str, float]:
+  """Shared 0..1 difficulty level driven by success, with a time floor.
+
+  Among the episodes ending now, the fraction that reached the goal at least
+  ``count_threshold`` times raises the level by ``step`` (>= ``promote_frac``)
+  or lowers it (< ``demote_frac``). The level never drops below a linear ramp
+  over training progress, so a task that never succeeds still reaches full
+  difficulty by ``floor_rampup_frac`` of training.
+  """
+  attr = f"_curriculum_level_{key}"
+  level = float(getattr(env, attr, 0.0))
+  env_ids = resolve_env_ids(env, env_ids)
+  reach = env.command_manager.get_term(command_name).metrics["goal_reach_count"]
+  frac = 0.0
+  if env_ids.numel() > 0:
+    frac = float((reach[env_ids] >= float(count_threshold)).float().mean().item())
+    if frac >= promote_frac:
+      level += step
+    elif frac < demote_frac:
+      level -= step
+  floor = (
+    get_linear_progress(env, floor_warmup_frac, floor_rampup_frac)
+    if hasattr(env, "max_common_steps")
+    else 0.0
+  )
+  level = min(max(level, floor, 0.0), 1.0)
+  setattr(env, attr, level)
+  return {"value": level, "success_env_frac": frac, "floor": floor}
+
+
+def wrist_range_curriculum(
+  env,
+  env_ids,
+  action_name: str = "wrist_pose",
+  command_name: str = "reorient_command",
+  min_scale: float = 0.1,
+  count_threshold: int = 3,
+  promote_frac: float = 0.5,
+  demote_frac: float = 0.0,
+  step: float = 0.01,
+  floor_warmup_frac: float = 0.1,
+  floor_rampup_frac: float = 0.5,
+) -> dict[str, float]:
+  """Grow the wrist action range from ``min_scale`` to its full limits.
+
+  The fingers learn to manipulate first; the wrist then joins as an aid.
+  """
+  info = _success_level(
+    env,
+    env_ids,
+    f"wrist_range_{action_name}",
+    command_name,
+    count_threshold,
+    promote_frac,
+    demote_frac,
+    step,
+    floor_warmup_frac,
+    floor_rampup_frac,
+  )
+  scale = min_scale + info["value"] * (1.0 - min_scale)
+  env.action_manager.get_term(action_name).range_scale = scale
+  return {**info, "range_scale": scale}
+
+
+def goal_rotation_curriculum(
+  env,
+  env_ids,
+  command_name: str = "reorient_command",
+  min_angle: float = math.radians(30.0),
+  count_threshold: int = 3,
+  promote_frac: float = 0.5,
+  demote_frac: float = 0.1,
+  step: float = 0.01,
+  floor_warmup_frac: float = 0.1,
+  floor_rampup_frac: float = 0.7,
+) -> dict[str, float]:
+  """Grow the goal rotation (from the object's current pose) up to full SO(3)."""
+  info = _success_level(
+    env,
+    env_ids,
+    f"goal_rotation_{command_name}",
+    command_name,
+    count_threshold,
+    promote_frac,
+    demote_frac,
+    step,
+    floor_warmup_frac,
+    floor_rampup_frac,
+  )
+  max_angle = min_angle + info["value"] * (math.pi - min_angle)
+  env.command_manager.get_term(command_name).goal_max_angle = max_angle
+  return {**info, "goal_max_angle_deg": math.degrees(max_angle)}

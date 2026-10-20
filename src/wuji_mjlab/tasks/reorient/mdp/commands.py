@@ -2,13 +2,19 @@
 # Copyright 2026 Wuji Technology Co., Ltd.
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
-from mjlab.utils.lab_api.math import quat_apply, quat_error_magnitude, quat_mul
+from mjlab.utils.lab_api.math import (
+  quat_apply,
+  quat_error_magnitude,
+  quat_inv,
+  quat_mul,
+)
 
 from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
   ReorientCommandVisualization,
@@ -18,6 +24,29 @@ from wuji_mjlab.utils.math import random_quat_uniform
 
 if TYPE_CHECKING:
   import viser
+
+
+def random_quat_within_angle(
+  n: int, max_angle: float, device, newton_iters: int = 12
+) -> torch.Tensor:
+  """Rotations of at most ``max_angle``, distributed as uniform SO(3) truncated.
+
+  The rotation angle of a uniform SO(3) sample has CDF ``(a - sin a) / pi``;
+  sampling that CDF below ``max_angle`` (Newton inversion) with a uniform axis
+  reproduces uniform SO(3) exactly at ``max_angle = pi``.
+  """
+  max_angle = min(float(max_angle), math.pi)
+  cdf_max = (max_angle - math.sin(max_angle)) / math.pi
+  target = math.pi * cdf_max * torch.rand(n, device=device)  # a - sin(a)
+  angle = torch.clamp((6.0 * target).pow(1.0 / 3.0), max=max_angle)
+  for _ in range(newton_iters):
+    f = angle - torch.sin(angle) - target
+    angle = torch.clamp(
+      angle - f / (1.0 - torch.cos(angle)).clamp_min(1e-6), 0.0, max_angle
+    )
+  axis = torch.nn.functional.normalize(torch.randn(n, 3, device=device), dim=-1)
+  half = 0.5 * angle.unsqueeze(-1)
+  return torch.cat((torch.cos(half), axis * torch.sin(half)), dim=-1)
 
 
 class InHandReorientCommand(CommandTerm):
@@ -48,6 +77,14 @@ class InHandReorientCommand(CommandTerm):
     # the wrist-local object transform. Wrist motion (when actuated) only helps.
     self.goal_quat_tag = torch.zeros(self.num_envs, 4, device=self.device)
     self.goal_quat_tag[:, 0] = 1.0
+    # Max goal rotation from the object's current pose (set by a curriculum);
+    # >= pi samples uniformly on SO(3).
+    self.goal_max_angle = math.pi
+    # Bounded goals sampled on the reset path see stale kinematics (the reset
+    # writes qpos only); they are re-drawn on the next per-step update.
+    self._goal_pending = torch.zeros(
+      self.num_envs, dtype=torch.bool, device=self.device
+    )
 
     # Optional position goal, stored in the wrist-tag frame (deploy semantics).
     self.goal_pos_tag = torch.zeros(self.num_envs, 3, device=self.device)
@@ -161,8 +198,16 @@ class InHandReorientCommand(CommandTerm):
       self.goal_quat_tag[env_ids] = torch.tensor(
         self.cfg.goal_quat_tag_fixed, device=self.device
       )
-    else:
+    elif self.goal_max_angle >= math.pi:
       self.goal_quat_tag[env_ids] = random_quat_uniform(n, self.device)
+    else:
+      tag_quat_w = self.robot.data.site_pose_w[env_ids, self.tag_site_id, 3:7]
+      object_in_tag = quat_mul(
+        quat_inv(tag_quat_w), self.object.data.root_link_quat_w[env_ids]
+      )
+      delta = random_quat_within_angle(n, self.goal_max_angle, self.device)
+      self.goal_quat_tag[env_ids] = quat_mul(object_in_tag, delta)
+      self._goal_pending[env_ids] = True
     if self.cfg.goal_pos_range is not None:
       u = torch.rand(n, 3, device=self.device)
       self.goal_pos_tag[env_ids] = self._goal_pos_lo + u * (
@@ -187,6 +232,13 @@ class InHandReorientCommand(CommandTerm):
     return max(int(self.cfg.min_goal_interval / self._env.step_dt), 0)
 
   def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
+    if env_ids is None and bool(self._goal_pending.any()):
+      # Per-step path: kinematics are fresh, so re-draw goals bounded relative
+      # to the object pose drawn on the reset path.
+      pending = self._goal_pending.nonzero(as_tuple=False).squeeze(-1)
+      self._goal_pending[pending] = False
+      self._sample_goal_in_world(pending)
+      self._goal_pending[pending] = False
     selected = slice(None) if env_ids is None else env_ids
     goal_timer = self.goal_timer[selected] + 1
     ori_err = quat_error_magnitude(

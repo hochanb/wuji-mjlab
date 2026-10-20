@@ -112,6 +112,9 @@ class WristPoseAction(ActionTerm):
     )
     self._max_step = self._limit * cfg.max_rate_normalized * env.step_dt
     self._warmup_steps = warmup_steps(cfg.warmup_time_s, env.step_dt)
+    # Fraction of the joint limits the action may command (set by a curriculum).
+    # Observations and penalties stay normalised by the full limits.
+    self.range_scale = 1.0
 
   @property
   def action_dim(self) -> int:
@@ -137,7 +140,7 @@ class WristPoseAction(ActionTerm):
 
   def process_actions(self, actions: torch.Tensor) -> None:
     self._raw_actions[:] = actions
-    raw_target = torch.clamp(actions, -1.0, 1.0) * self._limit
+    raw_target = torch.clamp(actions, -1.0, 1.0) * self._limit * self.range_scale
     smoothed = (
       self.cfg.ema_alpha * raw_target + (1.0 - self.cfg.ema_alpha) * self._target
     )
