@@ -85,6 +85,7 @@ def make_reorient_env_cfg(
   finger_contact_param_geoms: tuple[str, ...] = HAND1_FINGER_CONTACT_PARAM_GEOMS,
   cage_up_axis: int = REORIENT_PALM_NORMAL_AXIS,
   robot_tilt_pivot_in_root: tuple[float, float, float] | None = None,
+  robot_pitch_range: tuple[float, float] | None = None,
 ) -> ManagerBasedRlEnvCfg:
   """Create Reorient task configuration.
 
@@ -92,7 +93,8 @@ def make_reorient_env_cfg(
     play: If True, switch to evaluation defaults (small num_envs, longer episode, debug viz, no policy obs noise, all startup DR / interval disturbance events stripped, curriculum cleared).
     geom_size_dr_geoms: Pass ``None`` for mesh collision geoms; ``randomize_geom_size_uniform`` only supports primitives.
     cage_up_axis: Palm-frame axis aligned with the hand's surface normal.
-    robot_tilt_pivot_in_root: Wuji Hand 2's mount point in its palm-root frame; reset pitch rotates about world Y through that point when set."""
+    robot_tilt_pivot_in_root: Wuji Hand 2's mount point in its palm-root frame; reset pitch rotates about world Y through that point when set.
+    robot_pitch_range: Reset tilt range of the hand [rad] (e.g. ``ROBOT_PITCH_RANGE``); ``None`` (default) keeps the hand untilted."""
   observations = build_reorient_observations(
     history_length=_HISTORY_LENGTH,
     tip_body_names=TIP_BODY_NAMES,
@@ -104,6 +106,7 @@ def make_reorient_env_cfg(
     geom_size_dr_geoms=geom_size_dr_geoms,
     finger_contact_param_geoms=finger_contact_param_geoms,
     robot_tilt_pivot_in_root=robot_tilt_pivot_in_root,
+    robot_pitch_range=robot_pitch_range,
   )
   rewards = build_reorient_rewards(
     tip_site_names=TIP_SITE_NAMES,

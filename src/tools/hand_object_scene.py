@@ -302,17 +302,14 @@ def make_env_cfg(name: str, orient: str, mass: float | None = None, num_envs: in
     ),
     spec_fn=lambda: object_spec(name, mass),
   )
-  # Fixed object/hand pose: reset to the default root state with no random
-  # object orientation or robot pitch (the reset term is what writes the pose).
-  for event_name, entity in (
-    ("reset_object_pose", "object"),
-    ("reset_robot_pose", "robot"),
-  ):
-    env_cfg.events[event_name] = EventTermCfg(
-      func=reset_root_state_uniform,
-      mode="reset",
-      params={"pose_range": {}, "asset_cfg": SceneEntityCfg(entity)},
-    )
+  # Fixed object pose: reset to the default root state with no random object
+  # orientation (the reset term is what writes the pose). The hand keeps the
+  # task's fixed mount tilt.
+  env_cfg.events["reset_object_pose"] = EventTermCfg(
+    func=reset_root_state_uniform,
+    mode="reset",
+    params={"pose_range": {}, "asset_cfg": SceneEntityCfg("object")},
+  )
   env_cfg.scene.num_envs = num_envs
   return env_cfg, agent_cfg
 

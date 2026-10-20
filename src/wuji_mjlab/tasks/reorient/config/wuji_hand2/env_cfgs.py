@@ -10,6 +10,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from wuji_mjlab.assets.objects.inhand_object.object_cfg import get_inhand_object_cfg
 from wuji_mjlab.assets.robots.wuji_hand2.wuji_hand2_cfg import get_wuji_hand2_cfg
 from wuji_mjlab.tasks.reorient.config.wuji_hand2.hand2_constants import (
+  REORIENT_HAND2_MOUNT_PITCH,
   REORIENT_HAND2_MOUNT_POS,
   REORIENT_HAND2_PALM_NORMAL_AXIS,
   REORIENT_HAND2_ROBOT_INIT_STATE,
@@ -77,6 +78,7 @@ def wuji_hand2_reorient_env_cfg(
     finger_contact_param_geoms=HAND2_FINGER_CONTACT_PARAM_GEOMS,
     cage_up_axis=REORIENT_HAND2_PALM_NORMAL_AXIS,
     robot_tilt_pivot_in_root=REORIENT_HAND2_MOUNT_POS,
+    robot_pitch_range=(REORIENT_HAND2_MOUNT_PITCH, REORIENT_HAND2_MOUNT_PITCH),
   )
   robot_cfg = get_wuji_hand2_rig_cfg(hand_side)
   cfg.scene.entities = {

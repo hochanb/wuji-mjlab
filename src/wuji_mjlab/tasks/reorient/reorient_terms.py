@@ -44,6 +44,8 @@ HAND1_SOFT_PAD_GEOMS = (
 
 HAND1_GEOM_SIZE_DR_GEOMS = (r".*finger[1-5]_link[2-3]_col",)
 
+# Opt-in reset tilt of the hand mount [rad]; pass as ``robot_pitch_range`` to
+# enable it (off by default).
 ROBOT_PITCH_RANGE = (-0.4, 0.1)
 
 
@@ -315,17 +317,20 @@ def build_reorient_events(
   soft_pad_geoms: tuple[str, ...] = HAND1_SOFT_PAD_GEOMS,
   geom_size_dr_geoms: tuple[str, ...] | None = HAND1_GEOM_SIZE_DR_GEOMS,
   robot_tilt_pivot_in_root: tuple[float, float, float] | None = None,
+  robot_pitch_range: tuple[float, float] | None = None,
 ) -> dict[str, EventTermCfg]:
   """Build all event terms (resets, intervals, startup DR).
 
   Args:
     geom_size_dr_geoms: Pass ``None`` for mesh collision geoms; ``randomize_geom_size_uniform`` only supports primitives.
-    robot_tilt_pivot_in_root: Root-frame mount location for Wuji Hand 2's world-axis pitch; its palm root maps local Y to world Z."""
+    robot_tilt_pivot_in_root: Root-frame mount location for Wuji Hand 2's world-axis pitch; its palm root maps local Y to world Z.
+    robot_pitch_range: Reset tilt range of the hand [rad], e.g. ``ROBOT_PITCH_RANGE``; ``None`` (default) resets to the untilted pose."""
   robot_pose = EventTermCfg(
     func=mdp.reset_root_state_uniform,
     mode="reset",
     params={
-      "pose_range": {"pitch": ROBOT_PITCH_RANGE},
+      # Keep the "pitch" key so callers can still override the range in place.
+      "pose_range": {"pitch": robot_pitch_range or (0.0, 0.0)},
       "asset_cfg": SceneEntityCfg("robot"),
     },
   )

@@ -12,6 +12,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.tasks.registry import load_env_cfg
 from mjlab.utils.lab_api.math import quat_apply
 from wuji_mjlab.tasks.reorient.config.wuji_hand2.hand2_constants import (
+  REORIENT_HAND2_MOUNT_PITCH,
   REORIENT_HAND2_PALM_NORMAL_AXIS,
 )
 from wuji_mjlab.tasks.reorient.reorient_constants import REORIENT_PALM_NORMAL_AXIS
@@ -69,3 +70,28 @@ def test_configured_pitch_tilts_palm_normal_about_world_y(envs, generation, pitc
       f"{generation} pitch={pitch:+.4f} rad; measured={measured:+.6f} rad "
       f"({math.degrees(measured):+.3f} deg), normal={normal}"
     )
+
+
+@pytest.mark.parametrize(
+  ("generation", "pitch"),
+  [("hand1", 0.0), ("hand2", REORIENT_HAND2_MOUNT_PITCH)],
+)
+@pytest.mark.parametrize("play", (False, True))
+def test_default_reset_tilt_is_fixed_mount_pose(generation, pitch, play):
+  cfg = load_env_cfg(_TASKS[generation][0], play=play)
+  assert cfg.events["reset_robot_pose"].params["pose_range"] == {
+    "pitch": (pitch, pitch)
+  }
+
+
+def test_hand2_mount_pitch_matches_pen_spin_wrist_pose():
+  from wuji_mjlab.tasks.pen_spin.config.wuji_hand2.hand2_constants import (
+    RIGHT_FIXED_WRIST_POSE_W,
+  )
+
+  quat = torch.tensor([RIGHT_FIXED_WRIST_POSE_W[3:]], dtype=torch.float32)
+  quat = quat / quat.norm()
+  local_normal = torch.zeros((1, 3))
+  local_normal[0, REORIENT_HAND2_PALM_NORMAL_AXIS] = 1.0
+  normal = quat_apply(quat, local_normal)[0].tolist()
+  assert abs(math.atan2(normal[0], normal[2]) - REORIENT_HAND2_MOUNT_PITCH) < 1e-3

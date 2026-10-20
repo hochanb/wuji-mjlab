@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Wuji Technology Co., Ltd.
 
+import math
 from collections.abc import Callable
 
 import mujoco
@@ -15,6 +16,10 @@ REORIENT_HAND2_ROOT_POS = (-0.0284999, 0.00300004, 0.500250158)
 REORIENT_HAND2_ROOT_ROT = (0.5, 0.5, 0.5, 0.5)
 
 REORIENT_HAND2_MOUNT_POS = (-0.0030000041, -0.000250110803, 0.0285)
+# Physical Hand 2 jig: hand pitched down 10 deg about world Y through the mount
+# (the PenSpin RIGHT_FIXED_WRIST_POSE_W palm normal is at -10.00 deg in this
+# convention). Used as the fixed reset tilt.
+REORIENT_HAND2_MOUNT_PITCH = math.radians(-10.0)
 REORIENT_HAND2_MOUNT_ROT = (1.0, 0.0, 0.0, -0.0000081995)
 REORIENT_HAND2_TAG_POS = (0.0, 0.037408, 0.034737)
 REORIENT_HAND2_TAG_ROT = (0.5, -0.5, -0.5, -0.5)
