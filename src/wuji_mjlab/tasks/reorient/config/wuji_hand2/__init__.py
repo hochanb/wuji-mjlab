@@ -2,6 +2,7 @@
 # Copyright 2026 Wuji Technology Co., Ltd.
 """Wuji Hand 2 reorient task registration (right hand only)."""
 
+import math
 from dataclasses import replace
 from functools import partial
 
@@ -180,12 +181,12 @@ register_mjlab_task(
 _STAPLER_INIT_LIFT = 0.04
 
 
-def _with_stapler(cfg):
-  """Swap the cube for the stapler in a reorient env cfg."""
+def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
+  """Swap the cube for the stapler in a reorient env cfg (start pose ``rot``)."""
   x, y, z = REORIENT_HAND2_CUBE_INIT_POS["right"]
   stapler = get_compound_object_cfg("stapler")
   stapler.init_state.pos = (x, y, z + _STAPLER_INIT_LIFT)
-  stapler.init_state.rot = (1.0, 0.0, 0.0, 0.0)
+  stapler.init_state.rot = rot
   cfg.scene.entities["object"] = stapler
   # The cube sensors match the object geom named "cube"; on a multi-geom object
   # that is only the first part, so match the whole object body instead.
@@ -349,14 +350,40 @@ register_mjlab_task(
 )
 
 
-# Fixed stapler goal: lying across the palm (long axis near the palm width,
-# base towards the palm), seated slightly diagonally. Built from the crosswise
-# pose (centred laterally at the along-finger offset where the stapler settles
+# Fixed stapler goal: lying on its side across the palm (long axis near the
+# palm width), seated slightly diagonally. Built from the crosswise pose
+# (centred laterally at the along-finger offset where the stapler settles
 # lengthwise on the idle hand, base 2 mm above the palm collision surface) by
 # moving -2 cm along the object's y axis, 0.6 cm down its z axis (the palm
-# normal) and turning +10 deg about its z axis. Tag frame.
-_STAPLER_CROSSWISE_POS = (-0.1076, -0.0006, 0.0011)
-_STAPLER_CROSSWISE_QUAT = (0.6106, 0.0, 0.0, 0.7919)
+# normal) and turning +10 deg about its z axis; then turned -90 deg about its
+# long (x) axis onto its side and lowered 6.3 mm along the palm normal to keep
+# that pose's palm clearance (-0.9 mm), and turned a further -15 deg about its
+# y axis (now the inward palm normal, so the clearance is unchanged), then
+# moved 1.5 cm along its z axis and 2 cm along its x axis (both in the palm
+# plane), flipped 180 deg about its x axis onto its other side and turned a
+# further +15 deg about its y axis (now the outward palm normal; palm gap
+# 4.5 mm). Tag frame.
+_STAPLER_CROSSWISE_POS = (-0.1305, 0.0093, -0.0052)
+_STAPLER_CROSSWISE_QUAT = (0.2721, 0.2721, 0.6527, 0.6527)
+# Start pose for the fixed-goal task: upright, turned 180 deg about its z axis
+# (hinge end towards the other side), then by a random rotation of at most
+# 45 deg. The COM is the body origin, so the drop point is unchanged; at 45 deg
+# about 0.2% of the spawns touch the hand, by under 1 mm.
+_STAPLER_FIXED_GOAL_INIT_ROT = (0.0, 0.0, 0.0, 1.0)
+_STAPLER_FIXED_GOAL_INIT_MAX_ANGLE = math.radians(45.0)
+
+
+def _with_random_start(cfg, max_angle):
+  """Reset the object within ``max_angle`` of its start pose (+-1 cm), and keep
+  the fingers at their reset pose through the action warmup instead of closing
+  them to the cage pose while the object drops in."""
+  cfg.events["reset_object_pose"] = EventTermCfg(
+    func=mdp.reset_object_orientation,
+    mode="reset",
+    params={"pos_noise": 0.01, "max_angle": max_angle},
+  )
+  cfg.actions["finger_joint_pos"].warmup_hold_reset_pose = True
+  return cfg
 
 
 def _with_fixed_goal(cfg, pos, quat):
@@ -370,15 +397,25 @@ register_mjlab_task(
   task_id="WujiHand2_ReorientStaplerFixedGoalWrist_50Hz",
   env_cfg=_with_fixed_goal(
     _with_wrist(
-      _with_stapler(_reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE))
+      _with_random_start(
+        _with_stapler(
+          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE),
+          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
+        ),
+        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
+      )
     ),
     _STAPLER_CROSSWISE_POS,
     _STAPLER_CROSSWISE_QUAT,
   ),
   play_env_cfg=_with_fixed_goal(
     _with_wrist(
-      _with_stapler(
-        _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True)
+      _with_random_start(
+        _with_stapler(
+          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True),
+          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
+        ),
+        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
       )
     ),
     _STAPLER_CROSSWISE_POS,
