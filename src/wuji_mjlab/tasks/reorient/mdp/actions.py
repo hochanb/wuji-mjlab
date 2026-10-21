@@ -43,6 +43,9 @@ class JointPositionOffsetEMAAction(JointPositionAction):
 
     self._prev_target = self._default_joint_pos.clone()
     self._processed_actions.copy_(self._default_joint_pos)
+    # Joint targets held during the warmup: the default pose, or with
+    # warmup_hold_reset_pose the pose the reset left each env in.
+    self._warmup_target = self._default_joint_pos.clone()
 
   def process_actions(self, actions: torch.Tensor):
     self._raw_actions[:] = actions
@@ -56,7 +59,7 @@ class JointPositionOffsetEMAAction(JointPositionAction):
     )
 
     in_warmup = (self._env.episode_length_buf < self._warmup_steps).unsqueeze(-1)
-    self._processed_actions = torch.where(in_warmup, self._default_joint_pos, smoothed)
+    self._processed_actions = torch.where(in_warmup, self._warmup_target, smoothed)
     self._prev_target = self._processed_actions.clone()
 
   @property
@@ -65,8 +68,14 @@ class JointPositionOffsetEMAAction(JointPositionAction):
 
   def reset(self, env_ids: torch.Tensor) -> None:
     super().reset(env_ids)
-    self._prev_target[env_ids] = self._default_joint_pos[env_ids]
-    self._processed_actions[env_ids] = self._default_joint_pos[env_ids]
+    if self.cfg.warmup_hold_reset_pose:
+      # Reset events have already written this episode's joint state.
+      pose = self._entity.data.joint_pos[env_ids][:, self._target_ids]
+      self._warmup_target[env_ids] = torch.clamp(
+        pose, self._lower_limits[env_ids], self._upper_limits[env_ids]
+      )
+    self._prev_target[env_ids] = self._warmup_target[env_ids]
+    self._processed_actions[env_ids] = self._warmup_target[env_ids]
 
 
 @dataclass(kw_only=True)
@@ -76,6 +85,9 @@ class JointPositionOffsetEMAActionCfg(JointPositionActionCfg):
   action_scale: float = 0.5
   ema_alpha: float = 0.5
   warmup_time_s: float = 0.4
+  # Hold the joints where the reset left them during the warmup instead of
+  # driving them to the default (cage) pose, so they do not close on their own.
+  warmup_hold_reset_pose: bool = False
 
   def build(self, env) -> JointPositionOffsetEMAAction:
     return JointPositionOffsetEMAAction(self, env)
