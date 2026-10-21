@@ -292,16 +292,20 @@ def drop_penalty_sparse(
 
 
 class ActionHighFreqPenalty(ManagerTermBase):
-  """Second difference (jerk) of one action term's ``processed_action``.
+  """Second difference (jerk) of one action term's command signal.
 
   ``action_name`` selects the term: the finger joint targets by default, or the
-  wrist servo targets (normalised by their limits).
+  wrist servo targets (normalised by their limits). ``signal`` names the term
+  attribute to read: ``processed_action`` by default, or e.g. the wrist's
+  ``smoothed_action`` (EMA output before the rate limit, which would otherwise
+  cap the penalty).
   """
 
   def __init__(self, cfg, env):
     super().__init__(env)
     params = getattr(cfg, "params", None) or {}
     self._action_name = params.get("action_name", FINGER_ACTION)
+    self._signal = params.get("signal", "processed_action")
     self._c1: torch.Tensor | None = None
     self._c2: torch.Tensor | None = None
     self._age: torch.Tensor | None = None
@@ -319,7 +323,7 @@ class ActionHighFreqPenalty(ManagerTermBase):
       self._age[env_ids] = 0
 
   def __call__(self, env, **_params) -> torch.Tensor:
-    c = env.action_manager.get_term(self._action_name).processed_action
+    c = getattr(env.action_manager.get_term(self._action_name), self._signal)
     if self._c1 is None:
       self._c1 = torch.zeros_like(c)
       self._c2 = torch.zeros_like(c)

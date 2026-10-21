@@ -108,6 +108,25 @@ def test_wrist_rate_limited(env):
   torch.testing.assert_close(first, torch.full_like(first, expected), atol=1e-6, rtol=0)
 
 
+def test_wrist_hf_penalty_reads_ema_before_rate_limit(env):
+  env.reset()
+  wrist = env.action_manager.get_term("wrist_pose")
+  zero = torch.zeros(env.num_envs, env.action_manager.total_action_dim)
+  _run(env, zero)
+  action = zero.clone()
+  action[:, 20] = 1.0
+  env.step(action)
+  # A full-range step: the EMA moves alpha of the way, the rate limit far less.
+  smoothed = wrist.smoothed_action[:, 0]
+  limited = wrist.processed_action[:, 0]
+  torch.testing.assert_close(
+    smoothed, torch.full_like(smoothed, wrist.cfg.ema_alpha), atol=1e-6, rtol=0
+  )
+  assert torch.all(limited < smoothed)
+  params = env.reward_manager.get_term_cfg("wrist_action_hf").params
+  assert params["signal"] == "smoothed_action"
+
+
 def test_wrist_returns_to_mount_pose_on_reset(env):
   zero = torch.zeros(env.num_envs, env.action_manager.total_action_dim)
   env.reset()

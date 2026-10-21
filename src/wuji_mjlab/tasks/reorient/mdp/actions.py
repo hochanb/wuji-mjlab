@@ -103,6 +103,7 @@ class WristPoseAction(ActionTerm):
     n, device = self.num_envs, self.device
     self._joint_ids = torch.tensor(ids, device=device)
     self._raw_actions = torch.zeros(n, 6, device=device)
+    self._smoothed = torch.zeros(n, 6, device=device)  # EMA, before the rate limit
     self._target = torch.zeros(n, 6, device=device)  # smoothed, rate-limited
     self._applied = torch.zeros(n, 6, device=device)  # current servo target
     self._step_start = torch.zeros(n, 6, device=device)
@@ -130,6 +131,11 @@ class WristPoseAction(ActionTerm):
     return self._target / self._limit
 
   @property
+  def smoothed_action(self) -> torch.Tensor:
+    """EMA-smoothed target before the rate limit, normalised by the joint limits."""
+    return self._smoothed / self._limit
+
+  @property
   def wrist_offset(self) -> torch.Tensor:
     """Measured wrist joint positions ``[rx, ry, rz (rad), tx, ty, tz (m)]``."""
     return self._entity.data.joint_pos[:, self._joint_ids]
@@ -147,6 +153,7 @@ class WristPoseAction(ActionTerm):
     step = torch.clamp(smoothed - self._target, -self._max_step, self._max_step)
     target = self._target + step
     in_warmup = (self._env.episode_length_buf < self._warmup_steps).unsqueeze(-1)
+    self._smoothed = torch.where(in_warmup, torch.zeros_like(smoothed), smoothed)
     self._target = torch.where(in_warmup, torch.zeros_like(target), target)
     self._step_start = self._applied.clone()
     self._substep = 0
@@ -161,6 +168,7 @@ class WristPoseAction(ActionTerm):
     if env_ids is None:
       env_ids = slice(None)
     self._raw_actions[env_ids] = 0.0
+    self._smoothed[env_ids] = 0.0
     self._target[env_ids] = 0.0
     self._applied[env_ids] = 0.0
     self._step_start[env_ids] = 0.0

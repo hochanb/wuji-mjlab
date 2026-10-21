@@ -277,8 +277,12 @@ def _with_wrist(cfg):
       cfg.observations[group].terms[name].params["asset_cfg"] = fingers
   cfg.rewards["hand_pose"].params["asset_cfg"] = fingers
   # Wrist regularisers, lighter than their finger counterparts (-30 / -0.2).
+  # Jerk of the EMA output before the rate limit: after it, the per-step change
+  # is capped, so the penalty would saturate exactly when the wrist shakes most.
   cfg.rewards["wrist_action_hf"] = RewardTermCfg(
-    func=mdp.ActionHighFreqPenalty, weight=-10.0, params={"action_name": "wrist_pose"}
+    func=mdp.ActionHighFreqPenalty,
+    weight=-10.0,
+    params={"action_name": "wrist_pose", "signal": "smoothed_action"},
   )
   cfg.rewards["wrist_pose"] = RewardTermCfg(
     func=mdp.wrist_pose_penalty, weight=-0.1, params={"action_name": "wrist_pose"}
