@@ -40,8 +40,11 @@ class _Env(SimpleNamespace):
   pass
 
 
-def _env(reach: float, progress: float | None):
-  command = SimpleNamespace(metrics={"goal_reach_count": torch.full((8,), reach)})
+def _env(reach: float, progress: float | None, single_success: bool = False):
+  command = SimpleNamespace(
+    metrics={"goal_reach_count": torch.full((8,), reach)},
+    cfg=SimpleNamespace(single_success=single_success),
+  )
   wrist = SimpleNamespace(range_scale=1.0)
   env = _Env(
     num_envs=8,
@@ -76,3 +79,11 @@ def test_curricula_promote_on_success():
     info = goal_rotation_curriculum(env, ids, step=0.05)
   assert math.isclose(info["value"], 0.5)
   assert command.goal_max_angle > math.radians(30.0)
+
+
+def test_single_success_promotes_on_one_reach():
+  ids = torch.arange(8)
+  env, _, _ = _env(reach=1.0, progress=None)
+  assert goal_rotation_curriculum(env, ids, step=0.05)["value"] == 0.0
+  env, _, _ = _env(reach=1.0, progress=None, single_success=True)
+  assert math.isclose(goal_rotation_curriculum(env, ids, step=0.05)["value"], 0.05)

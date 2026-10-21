@@ -610,6 +610,14 @@ def build_reorient_terminations() -> dict[str, TerminationTermCfg]:
     # Degenerate mesh-mesh contact in mujoco-warp can NaN a single env; reset it
     # instead of letting the NaN reach the rsl_rl runner and kill the whole run.
     "nan_guard": TerminationTermCfg(func=mdp.nan_detection),
+    # Only fires with the command's single_success option. A time-out, not a
+    # failure: the return is bootstrapped, so ending on success does not cut
+    # off the alignment reward the policy would have kept collecting.
+    "goal_success": TerminationTermCfg(
+      func=mdp.goal_success,
+      params={"command_name": "reorient_command"},
+      time_out=True,
+    ),
   }
 
 

@@ -125,6 +125,11 @@ class InHandReorientCommand(CommandTerm):
     self._goal_switched = torch.zeros(
       self.num_envs, dtype=torch.bool, device=self.device
     )
+    # single_success: set once the goal has been reached and held through the
+    # success window; the goal_success termination ends the episode on it.
+    self.episode_success = torch.zeros(
+      self.num_envs, dtype=torch.bool, device=self.device
+    )
     self._within_threshold = torch.zeros(
       self.num_envs, dtype=torch.bool, device=self.device
     )
@@ -227,6 +232,7 @@ class InHandReorientCommand(CommandTerm):
     self._success_achieved[env_ids] = False
     self._goal_switched[env_ids] = False
     self._within_threshold[env_ids] = False
+    self.episode_success[env_ids] = False
 
   def _min_goal_steps(self) -> int:
     return max(int(self.cfg.min_goal_interval / self._env.step_dt), 0)
@@ -295,7 +301,11 @@ class InHandReorientCommand(CommandTerm):
     if env_ids is not None:
       advance_ids = env_ids[advance_ids]
     if advance_ids.numel() > 0:
-      self._sample_goal_in_world(advance_ids)
+      if self.cfg.single_success:
+        # Keep the goal: the episode ends on this success (goal_success).
+        self.episode_success[advance_ids] = True
+      else:
+        self._sample_goal_in_world(advance_ids)
 
     self._goal_switched[selected] = should_switch
 
@@ -404,6 +414,10 @@ class InHandReorientCommandCfg(CommandTermCfg):
   pos_success_threshold: float | None = None
   # Fixed goal orientation in the wrist-tag frame (wxyz); None samples goals.
   goal_quat_tag_fixed: tuple[float, float, float, float] | None = None
+  # One goal per episode: after the success window the goal is kept and the
+  # episode ends (goal_success termination), and success curricula count a
+  # single reach as success. Independent of goal_quat_tag_fixed.
+  single_success: bool = False
   debug_vis: bool = False
   robot_entity_name: str = "robot"
   palm_body_pattern: str = ".*_palm_link"

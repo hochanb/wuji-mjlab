@@ -58,6 +58,22 @@ class TestCommandSuccessCounting:
     assert not cmd.in_success_window.any()
     assert cmd.window_timer.item() == 0
 
+  def test_single_success_keeps_goal_and_flags_episode(self):
+    cmd = _make_reorient_command(num_envs=1, single_success=True)
+    _align_object_with_goal(cmd)
+    goal = cmd.goal_quat_w.clone()
+
+    for _ in range(cmd.cfg.success_hold_steps + cmd.cfg.goal_switch_delay - 2):
+      cmd._update_command()
+    assert not cmd.episode_success.any(), "must not end before the window closes"
+    cmd._update_command()
+
+    assert cmd.episode_success.all()
+    assert cmd.goal_reach_count.item() == 1
+    torch.testing.assert_close(cmd.goal_quat_w, goal)
+    cmd._resample_command(torch.tensor([0]))
+    assert not cmd.episode_success.any(), "reset must clear the success flag"
+
   def test_two_phase_state_machine_progression(self):
     cmd = _make_reorient_command(num_envs=2)
     _align_object_with_goal(cmd)
@@ -129,6 +145,7 @@ def _make_reorient_command(
   num_envs: int,
   success_hold_steps: int = 3,
   goal_switch_delay: int = 4,
+  single_success: bool = False,
 ) -> InHandReorientCommand:
   body_names = ["robot_palm_link", "finger1"]
   pose_w = torch.zeros(num_envs, len(body_names), 7)
@@ -160,6 +177,7 @@ def _make_reorient_command(
     success_hold_steps=success_hold_steps,
     goal_switch_delay=goal_switch_delay,
     min_goal_interval=0.0,
+    single_success=single_success,
   )
   return InHandReorientCommand(cfg, env)
 

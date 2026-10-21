@@ -95,7 +95,10 @@ def _make_curriculum_env(
 ) -> SimpleNamespace:
   if goal_reach_count_metric is None:
     goal_reach_count_metric = torch.zeros(num_envs)
-  command = SimpleNamespace(metrics={"goal_reach_count": goal_reach_count_metric})
+  command = SimpleNamespace(
+    metrics={"goal_reach_count": goal_reach_count_metric},
+    cfg=SimpleNamespace(single_success=False),
+  )
   return SimpleNamespace(
     num_envs=num_envs,
     device="cpu",

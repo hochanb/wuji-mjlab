@@ -15,6 +15,7 @@ __all__ = [
   "get_linear_progress",
   "goal_rotation_curriculum",
   "reorient_success_curriculum",
+  "success_count_threshold",
   "resolve_env_ids",
   "wrist_range_curriculum",
 ]
@@ -41,6 +42,11 @@ def get_linear_progress(
   return float((step - warmup) / max(rampup - warmup, 1.0))
 
 
+def success_count_threshold(command, count_threshold: int) -> int:
+  """Goal reaches per episode that count as success: one under ``single_success``."""
+  return 1 if command.cfg.single_success else count_threshold
+
+
 def reorient_success_curriculum(
   env,
   env_ids,
@@ -54,6 +60,7 @@ def reorient_success_curriculum(
   env_ids = resolve_env_ids(env, env_ids)
 
   command = env.command_manager.get_term(command_name)
+  count_threshold = success_count_threshold(command, count_threshold)
   goal_reach_count = command.metrics["goal_reach_count"][env_ids]
   if goal_reach_count.numel() == 0:
     return {"value": float(env._reorient_success_curriculum)}
@@ -86,6 +93,7 @@ def adaptive_episode_curriculum(
   dec_rate: float = 0.2,
   min_scale: float = 0.05,
   drop_gamma: float = 1.0,
+  command_name: str = "reorient_command",
 ) -> dict[str, float]:
   if not hasattr(env, "_adaptive_episode_curriculum"):
     env._adaptive_episode_curriculum = float(min_scale)
@@ -98,6 +106,10 @@ def adaptive_episode_curriculum(
   episode_steps = env.episode_length_buf[env_ids].float()
   progress = torch.clamp(episode_steps / float(target_steps), 0.0, 1.0)
   reached_target = episode_steps >= float(target_steps)
+  # Under single_success an episode that ends on success did not drop the object.
+  command = env.command_manager.get_term(command_name)
+  if command.cfg.single_success:
+    reached_target = reached_target | command.episode_success[env_ids]
 
   terminated = getattr(env.termination_manager, "terminated", None)
   if terminated is None:
@@ -149,7 +161,9 @@ def _success_level(
   attr = f"_curriculum_level_{key}"
   level = float(getattr(env, attr, 0.0))
   env_ids = resolve_env_ids(env, env_ids)
-  reach = env.command_manager.get_term(command_name).metrics["goal_reach_count"]
+  command = env.command_manager.get_term(command_name)
+  count_threshold = success_count_threshold(command, count_threshold)
+  reach = command.metrics["goal_reach_count"]
   frac = 0.0
   if env_ids.numel() > 0:
     frac = float((reach[env_ids] >= float(count_threshold)).float().mean().item())
