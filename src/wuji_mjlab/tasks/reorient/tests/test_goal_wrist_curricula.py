@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import torch
 from mjlab.utils.lab_api.math import quat_error_magnitude
-from wuji_mjlab.tasks.reorient.mdp.commands import random_quat_within_angle
 from wuji_mjlab.tasks.reorient.mdp.curriculums import (
   goal_rotation_curriculum,
   wrist_range_curriculum,
 )
+from wuji_mjlab.utils.math import random_quat_within_angle
 
 _N = 100_000
 

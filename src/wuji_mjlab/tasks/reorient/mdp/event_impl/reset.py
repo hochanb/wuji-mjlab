@@ -16,7 +16,7 @@ from mjlab.utils.lab_api.math import (
 
 from wuji_mjlab.tasks.reorient.mdp._env_utils import resolve_env_ids
 from wuji_mjlab.tasks.reorient.mdp.runtime_state import get_reorient_runtime_state
-from wuji_mjlab.utils.math import random_quat_uniform
+from wuji_mjlab.utils.math import random_quat_uniform, random_quat_within_angle
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -77,8 +77,15 @@ def reset_object_orientation(
   env,
   env_ids,
   pos_noise: float = 0.01,
+  max_angle: float | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_OBJECT_CFG,
 ) -> None:
+  """Reset the object at its default position (+- ``pos_noise`` per axis).
+
+  ``max_angle`` None samples the orientation uniformly on SO(3); otherwise the
+  default orientation is turned by a random rotation of at most ``max_angle``
+  [rad] (uniform SO(3) truncated, about a uniformly random axis).
+  """
   env_ids = resolve_env_ids(env, env_ids)
   if env_ids.numel() == 0:
     return
@@ -86,7 +93,12 @@ def reset_object_orientation(
   asset: Entity = env.scene[asset_cfg.name]
   default_state = asset.data.default_root_state[env_ids].clone()
 
-  default_state[:, 3:7] = random_quat_uniform(env_ids.numel(), env.device)
+  n = env_ids.numel()
+  if max_angle is None:
+    default_state[:, 3:7] = random_quat_uniform(n, env.device)
+  else:
+    delta = random_quat_within_angle(n, max_angle, env.device)
+    default_state[:, 3:7] = quat_mul(default_state[:, 3:7], delta)
 
   positions = default_state[:, :3] + env.scene.env_origins[env_ids]
   if pos_noise > 0.0:

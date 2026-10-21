@@ -20,33 +20,10 @@ from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
   ReorientCommandVisualization,
   object_ghost_parts,
 )
-from wuji_mjlab.utils.math import random_quat_uniform
+from wuji_mjlab.utils.math import random_quat_uniform, random_quat_within_angle
 
 if TYPE_CHECKING:
   import viser
-
-
-def random_quat_within_angle(
-  n: int, max_angle: float, device, newton_iters: int = 12
-) -> torch.Tensor:
-  """Rotations of at most ``max_angle``, distributed as uniform SO(3) truncated.
-
-  The rotation angle of a uniform SO(3) sample has CDF ``(a - sin a) / pi``;
-  sampling that CDF below ``max_angle`` (Newton inversion) with a uniform axis
-  reproduces uniform SO(3) exactly at ``max_angle = pi``.
-  """
-  max_angle = min(float(max_angle), math.pi)
-  cdf_max = (max_angle - math.sin(max_angle)) / math.pi
-  target = math.pi * cdf_max * torch.rand(n, device=device)  # a - sin(a)
-  angle = torch.clamp((6.0 * target).pow(1.0 / 3.0), max=max_angle)
-  for _ in range(newton_iters):
-    f = angle - torch.sin(angle) - target
-    angle = torch.clamp(
-      angle - f / (1.0 - torch.cos(angle)).clamp_min(1e-6), 0.0, max_angle
-    )
-  axis = torch.nn.functional.normalize(torch.randn(n, 3, device=device), dim=-1)
-  half = 0.5 * angle.unsqueeze(-1)
-  return torch.cat((torch.cos(half), axis * torch.sin(half)), dim=-1)
 
 
 class InHandReorientCommand(CommandTerm):
