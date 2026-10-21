@@ -144,7 +144,7 @@ def _reorient_pos_hand2_50hz_rl_cfg(experiment_name: str, run_name: str):
 
 # Policy std cap for the wrist tasks: actions are clipped to [-1, 1], so a larger
 # std only adds clipped (bang-bang) samples rather than exploration.
-_WRIST_TASK_STD_RANGE = (0.2, 1.0)
+_WRIST_TASK_STD_RANGE = (0.1, 1.0)
 
 
 def _wrist_rl_cfg(experiment_name: str, run_name: str):
