@@ -6,8 +6,7 @@ Each object is one free body named ``cube`` whose origin (the pivot) is the tota
 centre of mass, so the reorient task terms that look up ``cube`` /
 ``cube_visual`` / ``cube_center`` work unchanged. The first part keeps the
 ``cube`` / ``cube_visual`` geom names; other parts are ``cube_<i>`` /
-``cube_<i>_visual``. Friction and condim match ``xmls/cube.xml``; the contact
-softness does not (see ``_SOLMIX``).
+``cube_<i>_visual``. Contact parameters match ``xmls/cube.xml``.
 """
 
 from __future__ import annotations
@@ -26,16 +25,6 @@ _CYL_ALONG_Y = (float(np.cos(np.pi / 4)), float(-np.sin(np.pi / 4)), 0.0, 0.0)
 
 # Same density as the 54 mm / 120 g reorient cube.
 CUBE_DENSITY = 0.120 / 0.054**3
-
-# Hand-object contact softness. The hand geoms (priority 1) are soft pads with a
-# few mm of give, which lets a squeeze push a finger through a thin part such as
-# the 8 mm stapler base. At equal priority MuJoCo averages solref/solimp by
-# solmix and takes the larger friction, so a dominant solmix makes these stiff
-# values win while the hand's friction (and its randomisation) still applies.
-_PRIORITY = 1
-_SOLMIX = 100.0
-_SOLREF = (0.02, 1.0)  # 0.02 s: the 2 * timestep floor at dt = 0.01
-_SOLIMP = (0.95, 0.99, 0.001, 0.5, 2.0)
 
 
 @dataclass(frozen=True)
@@ -173,10 +162,8 @@ def compound_spec(name: str) -> mujoco.MjSpec:
       friction=[0.3, 0.005, 0.0001],
       conaffinity=2,
       condim=3,
-      priority=_PRIORITY,
-      solmix=_SOLMIX,
-      solref=list(_SOLREF),
-      solimp=list(_SOLIMP),
+      solref=[0.015, 1.0],
+      solimp=[0.85, 0.85, 0.001, 0.5, 2.0],
       **common,
     )
   body.add_site(name="cube_center", pos=[0.0, 0.0, 0.0], group=4)
