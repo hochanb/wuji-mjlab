@@ -277,22 +277,25 @@ def _with_wrist(cfg):
     for name in names:
       cfg.observations[group].terms[name].params["asset_cfg"] = fingers
   cfg.rewards["hand_pose"].params["asset_cfg"] = fingers
-  # Wrist regularisers, lighter than their finger counterparts (-30 / -0.2).
+  # Wrist regularisers. At 1/5 of these weights the wrist sat at its limits
+  # (bang-bang) and shook; the regularisers were ~10% of the alignment reward.
   # Jerk of the EMA output before the rate limit: after it, the per-step change
   # is capped, so the penalty would saturate exactly when the wrist shakes most.
   cfg.rewards["wrist_action_hf"] = RewardTermCfg(
     func=mdp.ActionHighFreqPenalty,
-    weight=-10.0,
+    weight=-50.0,
     params={"action_name": "wrist_pose", "signal": "smoothed_action"},
   )
   cfg.rewards["wrist_pose"] = RewardTermCfg(
-    func=mdp.wrist_pose_penalty, weight=-0.1, params={"action_name": "wrist_pose"}
+    func=mdp.wrist_pose_penalty, weight=-0.5, params={"action_name": "wrist_pose"}
   )
   # Keep the policy mean inside the clipped action range (see action_out_of_bounds).
-  for name in ("finger_joint_pos", "wrist_pose"):
-    key = "finger_action_bound" if name == "finger_joint_pos" else "wrist_action_bound"
+  for name, key, weight in (
+    ("finger_joint_pos", "finger_action_bound", -1.0),
+    ("wrist_pose", "wrist_action_bound", -5.0),
+  ):
     cfg.rewards[key] = RewardTermCfg(
-      func=mdp.action_out_of_bounds, weight=-1.0, params={"action_name": name}
+      func=mdp.action_out_of_bounds, weight=weight, params={"action_name": name}
     )
   cfg.rewards["torque"].params["asset_cfg"] = finger_actuators
   cfg.metrics["torque_saturation_ratio"].params["asset_cfg"] = finger_actuators
