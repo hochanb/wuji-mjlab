@@ -19,12 +19,13 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
   get_compound_object_cfg,
+  stapler_fingertip_targets,
 )
 from wuji_mjlab.rl.runner import WujiOnPolicyRunner
 from wuji_mjlab.tasks.reorient import mdp
 
 from .env_cfgs import wuji_hand2_reorient_env_cfg
-from .hand2_constants import REORIENT_HAND2_CUBE_INIT_POS
+from .hand2_constants import HAND2_TIP_PAD_POINTS, REORIENT_HAND2_CUBE_INIT_POS
 from .rsl_rl.ppo import wuji_hand2_reorient_ppo_runner_cfg
 from .wrist import (
   WRIST_JOINT_NAMES,
@@ -188,6 +189,22 @@ def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
   stapler.init_state.pos = (x, y, z + _STAPLER_INIT_LIFT)
   stapler.init_state.rot = rot
   cfg.scene.entities["object"] = stapler
+  # Fingertip targets (shown in the viewer); the reward is off until weighted.
+  cfg.commands["reorient_command"].fingertip_targets = stapler_fingertip_targets()
+  cfg.commands["reorient_command"].tip_point_offsets = HAND2_TIP_PAD_POINTS
+  cfg.rewards["fingertip_target"] = RewardTermCfg(
+    func=mdp.fingertip_target_proximity,
+    weight=0.0,
+    params={
+      "command_name": "reorient_command",
+      "scale": 0.02,
+      "pad_offset": 0.005,  # depth of HAND2_TIP_PAD_POINTS inside the pad
+      "ori_bound": 0.2,
+      "ori_margin": 0.3,
+      "pos_bound": 0.01,
+      "pos_margin": 0.02,
+    },
+  )
   # The cube sensors match the object geom named "cube"; on a multi-geom object
   # that is only the first part, so match the whole object body instead.
   for sensor in cfg.scene.sensors:

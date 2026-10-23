@@ -62,6 +62,16 @@ def _quat_mul(a, b) -> np.ndarray:
   )
 
 
+def _rotate_vec(quat, v) -> np.ndarray:
+  conj = (quat[0], -quat[1], -quat[2], -quat[3])
+  return _quat_mul(_quat_mul(quat, (0.0, *v)), conj)[1:]
+
+
+def _parts_com(parts: list[Part]) -> np.ndarray:
+  masses = np.array([p.density * p.volume for p in parts])
+  return (masses[:, None] * np.array([p.pos for p in parts])).sum(0) / masses.sum()
+
+
 def _rotate_about(parts: list[Part], pivot: np.ndarray, quat) -> list[Part]:
   """Rigidly rotate parts (position and orientation) about a pivot point."""
   conj = (quat[0], -quat[1], -quat[2], -quat[3])
@@ -123,13 +133,39 @@ def stapler_parts(open_deg: float = 15.0) -> list[Part]:
   ]
 
 
+def stapler_fingertip_targets(
+  open_deg: float = 15.0,
+) -> tuple[tuple[tuple[float, float, float], tuple[float, float, float]], ...]:
+  """Fingertip (point, outward direction) targets in the stapler body frame.
+
+  Thumb first: on the top plate, 1 cm in from its front (+x, away from the
+  hinge) edge. Index to pinky: along the underside of the base plate, front to
+  back. See ``InHandReorientCommandCfg.fingertip_targets``.
+  """
+  parts = stapler_parts(open_deg)
+  com = _parts_com(parts)
+  base, top = parts[0], parts[2]
+
+  def on(part: Part, local, normal):
+    point = np.asarray(part.pos) + _rotate_vec(part.quat, local) - com
+    direction = _rotate_vec(part.quat, normal)
+    return tuple(point.round(5).tolist()), tuple(direction.round(5).tolist())
+
+  thumb = on(top, (top.size[0] - 0.01, 0.0, top.size[2]), (0.0, 0.0, 1.0))
+  fingers = [
+    on(base, (x, 0.0, -base.size[2]), (0.0, 0.0, -1.0))
+    for x in (0.045, 0.015, -0.015, -0.045)
+  ]
+  return (thumb, *fingers)
+
+
 COMPOUND_OBJECTS = {"stapler": stapler_parts}
 
 
 def compound_spec(name: str) -> mujoco.MjSpec:
   parts = COMPOUND_OBJECTS[name]()
   masses = np.array([p.density * p.volume for p in parts])
-  com = (masses[:, None] * np.array([p.pos for p in parts])).sum(0) / masses.sum()
+  com = _parts_com(parts)
 
   spec = mujoco.MjSpec()
   body = spec.worldbody.add_body(name="cube")
