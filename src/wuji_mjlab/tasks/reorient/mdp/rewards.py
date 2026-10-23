@@ -337,6 +337,53 @@ class ActionHighFreqPenalty(ManagerTermBase):
     return penalty
 
 
+def fingertip_target_proximity(
+  env,
+  command_name: str = "reorient_command",
+  scale: float = 0.02,
+  pad_offset: float = 0.005,
+  ori_bound: float = 0.2,
+  ori_margin: float = 0.3,
+  pos_bound: float = 0.01,
+  pos_margin: float = 0.02,
+) -> torch.Tensor:
+  """Mean over fingers of exp(-max(0, d - pad_offset) / scale) * max(0, cos(theta)),
+  weighted by how close the object is to its goal pose.
+
+  The exponential (not Gaussian) keeps a usable slope several ``scale`` away
+  and is steepest at contact. ``pad_offset`` is the depth of the reference
+  point inside the pad, so the distance term is 1 when the pad touches.
+
+  ``d`` is the distance from the target point to the fingertip reference point
+  and ``theta`` the angle between that offset and the target's outward
+  direction, so a tip that is close but on the wrong side (e.g. behind a thin
+  wall) scores zero. The reference point sits inside the finger pad
+  (``tip_point_offsets``), so ``d`` stays well above zero while the pad touches
+  the target and the angle stays defined.
+
+  Finger placement only matters once the object is nearly at its goal, so the
+  term is scaled by ``tolerance`` of the orientation and position errors: 1
+  within ``*_bound``, falling to 0.1 at ``*_margin`` beyond it (the position
+  factor is 1 without a position goal).
+  """
+  command = env.command_manager.get_term(command_name)
+  offset = command.fingertip_pos_w - command.fingertip_target_pos_w
+  d = offset.norm(dim=-1)
+  cos = command.fingertip_target_dot / d.clamp_min(1e-6)
+  closeness = torch.exp(-(d - pad_offset).clamp_min(0.0) / scale)
+  placement = (closeness * cos.clamp_min(0.0)).mean(dim=-1)
+
+  ori_err = quat_error_magnitude(
+    command.object.data.root_link_quat_w, command.goal_quat
+  )
+  gate = tolerance(ori_err, bounds=(0.0, ori_bound), margin=ori_margin)
+  if command.cfg.goal_pos_range is not None:
+    gate = gate * tolerance(
+      command.pos_error(), bounds=(0.0, pos_bound), margin=pos_margin
+    )
+  return gate * placement
+
+
 def wrist_pose_penalty(env, action_name: str = WRIST_ACTION) -> torch.Tensor:
   """Squared wrist offset from the mount pose, normalised by the joint limits."""
   offset = env.action_manager.get_term(action_name).wrist_offset_normalized

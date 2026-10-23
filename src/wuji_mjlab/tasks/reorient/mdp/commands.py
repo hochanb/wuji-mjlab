@@ -18,6 +18,7 @@ from mjlab.utils.lab_api.math import (
 
 from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
   ReorientCommandVisualization,
+  draw_fingertip_targets,
   object_ghost_parts,
 )
 from wuji_mjlab.utils.math import random_quat_uniform, random_quat_within_angle
@@ -48,6 +49,29 @@ class InHandReorientCommand(CommandTerm):
         f"on entity '{cfg.robot_entity_name}'."
       )
     self.tag_site_id = int(tag_ids[0])
+
+    # Optional fingertip targets in the object body frame (one per tip site).
+    self._tip_site_ids: list[int] = []
+    if cfg.fingertip_targets is not None:
+      tip_ids, tip_names = self.robot.find_sites(cfg.tip_site_pattern)
+      if len(tip_ids) != len(cfg.fingertip_targets):
+        raise ValueError(
+          f"InHandReorientCommand: {len(cfg.fingertip_targets)} fingertip targets "
+          f"but '{cfg.tip_site_pattern}' matched {tip_names}."
+        )
+      self._tip_site_ids = list(tip_ids)
+      offsets = cfg.tip_point_offsets or ((0.0, 0.0, 0.0),) * len(tip_ids)
+      if len(offsets) != len(tip_ids):
+        raise ValueError(
+          f"InHandReorientCommand: {len(offsets)} tip point offsets for "
+          f"{len(tip_ids)} tip sites."
+        )
+      self._tip_point_offset = torch.tensor(offsets, device=self.device)
+      points, dirs = zip(*cfg.fingertip_targets, strict=True)
+      self._tip_target_pos_b = torch.tensor(points, device=self.device)
+      self._tip_target_dir_b = torch.nn.functional.normalize(
+        torch.tensor(dirs, device=self.device), dim=-1
+      )
 
     # Goal pose lives in the wrist-tag frame: the task is to bring the object to
     # a pose relative to the wrist, so success, rewards and observations all see
@@ -311,6 +335,40 @@ class InHandReorientCommand(CommandTerm):
     self.window_timer[selected] = window_timer
     self.reward_hold_counter[selected] = reward_hold_counter
 
+  def _object_frame(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+    pos = self.object.data.root_link_pos_w.unsqueeze(1)
+    quat = self.object.data.root_link_quat_w.unsqueeze(1).expand(-1, n, -1)
+    return pos, quat
+
+  @property
+  def fingertip_target_pos_w(self) -> torch.Tensor:
+    """[N, K, 3] fingertip target points in the world frame."""
+    k = len(self._tip_site_ids)
+    pos, quat = self._object_frame(k)
+    return pos + quat_apply(quat, self._tip_target_pos_b.expand(self.num_envs, k, 3))
+
+  @property
+  def fingertip_target_dir_w(self) -> torch.Tensor:
+    """[N, K, 3] unit target directions (out of the object surface), world frame."""
+    k = len(self._tip_site_ids)
+    _, quat = self._object_frame(k)
+    return quat_apply(quat, self._tip_target_dir_b.expand(self.num_envs, k, 3))
+
+  @property
+  def fingertip_pos_w(self) -> torch.Tensor:
+    """[N, K, 3] fingertip reference points (tip site + tip_point_offsets in
+    the site frame), ordered like the targets."""
+    pose = self.robot.data.site_pose_w[:, self._tip_site_ids]
+    offset = self._tip_point_offset.expand(self.num_envs, -1, -1)
+    return pose[..., :3] + quat_apply(pose[..., 3:7], offset)
+
+  @property
+  def fingertip_target_dot(self) -> torch.Tensor:
+    """[N, K] (tip - point) . direction: the tip's height above its target point
+    along the target direction (negative behind the surface there)."""
+    offset = self.fingertip_pos_w - self.fingertip_target_pos_w
+    return (offset * self.fingertip_target_dir_w).sum(-1)
+
   def _debug_vis_impl(self, visualizer) -> None:
     self._visualization.draw_debug_visuals(
       visualizer=visualizer,
@@ -323,6 +381,14 @@ class InHandReorientCommand(CommandTerm):
       object_quat_w=self.object.data.root_link_quat_w,
       policy_status_for_env=self._policy_status_for_env,
     )
+    if self._tip_site_ids:
+      draw_fingertip_targets(
+        visualizer=visualizer,
+        num_envs=self.num_envs,
+        target_pos_w=self.fingertip_target_pos_w,
+        target_dir_w=self.fingertip_target_dir_w,
+        tip_pos_w=self.fingertip_pos_w,
+      )
 
   def create_gui(
     self,
@@ -395,6 +461,16 @@ class InHandReorientCommandCfg(CommandTermCfg):
   # episode ends (goal_success termination), and success curricula count a
   # single reach as success. Independent of goal_quat_tag_fixed.
   single_success: bool = False
+  # Fingertip targets: one (point, direction) per tip site matched by
+  # tip_site_pattern (in match order), in the object body frame. The point is
+  # where that tip should touch; the direction points out of the surface there.
+  fingertip_targets: (
+    tuple[tuple[tuple[float, float, float], tuple[float, float, float]], ...] | None
+  ) = None
+  tip_site_pattern: str = ".*_finger[1-5]_tip"
+  # Fingertip reference point per tip site, as an offset in that site's frame
+  # (e.g. into the finger pad); None uses the site origins.
+  tip_point_offsets: tuple[tuple[float, float, float], ...] | None = None
   debug_vis: bool = False
   robot_entity_name: str = "robot"
   palm_body_pattern: str = ".*_palm_link"

@@ -460,3 +460,49 @@ class ReorientCommandVisualization:
           color=part.rgba,
           label=label,
         )
+
+
+_TIP_ARROW_RGBA = (1.0, 0.75, 0.0, 0.9)  # target point -> fingertip
+_TIP_DIR_RGBA = (0.0, 0.8, 1.0, 0.9)  # target direction
+_TIP_ARROW_WIDTH = 0.0015
+_TIP_DIR_LEN = 0.015
+_TIP_POINT_RADIUS = 0.002
+
+
+def draw_fingertip_targets(
+  *,
+  visualizer: "DebugVisualizer",
+  num_envs: int,
+  target_pos_w: "torch.Tensor",
+  target_dir_w: "torch.Tensor",
+  tip_pos_w: "torch.Tensor",
+) -> None:
+  """Thin arrows from each fingertip target point to its fingertip reference
+  point, plus the target point and a short arrow along its direction."""
+  points = target_pos_w.detach().cpu().numpy()
+  dirs = target_dir_w.detach().cpu().numpy()
+  tips = tip_pos_w.detach().cpu().numpy()
+  for env_idx in goal_vis_env_indices(num_envs):
+    for k in range(points.shape[1]):
+      p, tip = points[env_idx, k], tips[env_idx, k]
+      visualizer.add_sphere(
+        center=p,
+        radius=_TIP_POINT_RADIUS,
+        color=_TIP_DIR_RGBA,
+        label=f"tip_target_point_env{env_idx}_{k}",
+      )
+      visualizer.add_arrow(
+        start=p,
+        end=p + _TIP_DIR_LEN * dirs[env_idx, k],
+        color=_TIP_DIR_RGBA,
+        width=_TIP_ARROW_WIDTH,
+        label=f"tip_target_dir_env{env_idx}_{k}",
+      )
+      if np.linalg.norm(tip - p) > 1e-4:
+        visualizer.add_arrow(
+          start=p,
+          end=tip,
+          color=_TIP_ARROW_RGBA,
+          width=_TIP_ARROW_WIDTH,
+          label=f"tip_target_arrow_env{env_idx}_{k}",
+        )
