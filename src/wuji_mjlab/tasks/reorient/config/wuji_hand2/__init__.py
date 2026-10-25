@@ -19,6 +19,7 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
   get_compound_object_cfg,
+  smartphone_fingertip_targets,
   stapler_fingertip_targets,
 )
 from wuji_mjlab.rl.runner import WujiOnPolicyRunner
@@ -184,13 +185,19 @@ _STAPLER_INIT_LIFT = 0.04
 
 def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
   """Swap the cube for the stapler in a reorient env cfg (start pose ``rot``)."""
+  return _with_compound_object(cfg, "stapler", stapler_fingertip_targets(), rot)
+
+
+def _with_compound_object(cfg, name, fingertip_targets, rot=(1.0, 0.0, 0.0, 0.0)):
+  """Swap the cube for a compound object in a reorient env cfg (start pose
+  ``rot``, dropped from ``_STAPLER_INIT_LIFT`` above the cube's start)."""
   x, y, z = REORIENT_HAND2_CUBE_INIT_POS["right"]
-  stapler = get_compound_object_cfg("stapler")
-  stapler.init_state.pos = (x, y, z + _STAPLER_INIT_LIFT)
-  stapler.init_state.rot = rot
-  cfg.scene.entities["object"] = stapler
+  obj = get_compound_object_cfg(name)
+  obj.init_state.pos = (x, y, z + _STAPLER_INIT_LIFT)
+  obj.init_state.rot = rot
+  cfg.scene.entities["object"] = obj
   # Fingertip targets (shown in the viewer); the reward is off until weighted.
-  cfg.commands["reorient_command"].fingertip_targets = stapler_fingertip_targets()
+  cfg.commands["reorient_command"].fingertip_targets = fingertip_targets
   cfg.commands["reorient_command"].tip_point_offsets = HAND2_TIP_PAD_POINTS
   cfg.rewards["fingertip_target"] = RewardTermCfg(
     func=mdp.fingertip_target_proximity,
@@ -201,6 +208,7 @@ def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
       "pad_offset": 0.005,  # depth of HAND2_TIP_PAD_POINTS inside the pad
       "angle_power": 2.0,
       "finger_reduce": "mean",
+      "finger_weights": None,
       "ori_bound": 0.2,
       "ori_margin": 0.3,
       "pos_bound": 0.01,
@@ -396,14 +404,15 @@ _STAPLER_FIXED_GOAL_INIT_ROT = (0.0, 0.0, 0.0, 1.0)
 _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE = math.radians(45.0)
 
 
-def _with_random_start(cfg, max_angle):
-  """Reset the object within ``max_angle`` of its start pose (+-1 cm), and keep
-  the fingers at their reset pose through the action warmup instead of closing
-  them to the cage pose while the object drops in."""
+def _with_random_start(cfg, max_angle, roll_range=None):
+  """Reset the object within ``max_angle`` of its start pose (+-1 cm), after a
+  roll about its own x axis in ``roll_range`` if given, and keep the fingers at
+  their reset pose through the action warmup instead of closing them to the
+  cage pose while the object drops in."""
   cfg.events["reset_object_pose"] = EventTermCfg(
     func=mdp.reset_object_orientation,
     mode="reset",
-    params={"pos_noise": 0.01, "max_angle": max_angle},
+    params={"pos_noise": 0.01, "max_angle": max_angle, "roll_range": roll_range},
   )
   cfg.actions["finger_joint_pos"].warmup_hold_reset_pose = True
   return cfg
@@ -447,6 +456,44 @@ register_mjlab_task(
   rl_cfg=_wrist_rl_cfg(
     "wuji_reorient_hand2_stapler_fixed_goal_wrist",
     "ReorientStaplerFixedGoalWrist_Hand2_50Hz",
+  ),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+
+# Fixed smartphone goal: screen up on the palm, long axis about 45 deg to the
+# fingers, the right edge on the palm and the left edge lifted ~4 deg by the
+# fingers on the left side face, thumb on the row 2 / column 3 key. The pose
+# settled under gravity with the fingers on their targets (tag frame).
+_SMARTPHONE_GOAL_POS = (-0.1479, 0.0224, -0.0299)
+_SMARTPHONE_GOAL_QUAT = (0.5005, -0.1686, 0.1401, 0.8375)
+# Thumb on the key, index / middle on the side face weigh most.
+_SMARTPHONE_FINGER_WEIGHTS = (1.0, 0.8, 0.8, 0.2, 0.2)
+# Start at any roll about the long axis, then within 45 deg of that.
+_SMARTPHONE_INIT_MAX_ANGLE = math.radians(45.0)
+_SMARTPHONE_INIT_ROLL_RANGE = (-math.pi, math.pi)
+
+
+def _smartphone_fixed_goal_env_cfg(play: bool = False):
+  cfg = _with_compound_object(
+    _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=play),
+    "smartphone",
+    smartphone_fingertip_targets(),
+  )
+  cfg.rewards["fingertip_target"].params["finger_weights"] = _SMARTPHONE_FINGER_WEIGHTS
+  cfg = _with_wrist(
+    _with_random_start(cfg, _SMARTPHONE_INIT_MAX_ANGLE, _SMARTPHONE_INIT_ROLL_RANGE)
+  )
+  return _with_fixed_goal(cfg, _SMARTPHONE_GOAL_POS, _SMARTPHONE_GOAL_QUAT)
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientSmartphoneFixedGoalWrist_50Hz",
+  env_cfg=_smartphone_fixed_goal_env_cfg(),
+  play_env_cfg=_smartphone_fixed_goal_env_cfg(play=True),
+  rl_cfg=_wrist_rl_cfg(
+    "wuji_reorient_hand2_smartphone_fixed_goal_wrist",
+    "ReorientSmartphoneFixedGoalWrist_Hand2_50Hz",
   ),
   runner_cls=WujiOnPolicyRunner,
 )

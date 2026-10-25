@@ -8,6 +8,9 @@ import numpy as np
 import pytest
 from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
   compound_spec,
+  smartphone_fingertip_targets,
+  smartphone_key,
+  smartphone_parts,
   stapler_fingertip_targets,
 )
 
@@ -38,6 +41,30 @@ def test_stapler_targets_layout():
   assert xs == sorted(xs, reverse=True), "index to pinky must run front to back"
   assert thumb[2] > max(p[2] for p, _ in fingers), "thumb on top, fingers below"
   assert thumb[0] > 0.0, "thumb at the front (+x, away from the hinge)"
+
+
+def test_smartphone_targets_lie_on_the_surface_facing_out():
+  model = compound_spec("smartphone").compile()
+  data = mujoco.MjData(model)
+  mujoco.mj_forward(model, data)
+  for point, direction in smartphone_fingertip_targets():
+    np.testing.assert_allclose(
+      _surface_distance(model, data, point, direction), 0.01, atol=1e-4
+    )
+
+
+def test_smartphone_targets_layout():
+  (thumb, thumb_dir), *fingers = smartphone_fingertip_targets(thumb_key=(2, 3))
+  assert thumb_dir == (0.0, 0.0, 1.0), "thumb presses a front key"
+  assert all(d == (0.0, 1.0, 0.0) for _, d in fingers), "fingers on the left side"
+  xs = [p[0] for p, _ in fingers]
+  assert xs == sorted(xs, reverse=True), "index to pinky run top to bottom"
+  # Row 2 / column 3 from the top left: second-highest row, rightmost (-y) column.
+  keys = smartphone_parts()[1:13]
+  key = smartphone_key(smartphone_parts(), 2, 3)
+  rows = sorted({k.pos[0] for k in keys}, reverse=True)
+  assert key.pos[0] == rows[1]
+  assert key.pos[1] == min(k.pos[1] for k in keys)
 
 
 def _reward(tip, ori_err=0.0, pos_err=0.0, **kwargs):
@@ -91,3 +118,9 @@ def test_gate_floor_keeps_a_fraction_far_from_the_goal():
   at_goal = _reward(tip, gate_floor=0.2)
   assert at_goal == pytest.approx(_reward(tip))
   assert _reward(tip, ori_err=2.5, gate_floor=0.2) == pytest.approx(0.2 * at_goal, rel=1e-3)
+
+
+def test_finger_weights_scale_each_finger():
+  tip = [0.0, 0.0, 0.005]
+  assert _reward(tip, finger_weights=(0.2,)) == pytest.approx(0.2 * _reward(tip))
+  assert _reward(tip, finger_weights=(0.0,)) == 0.0

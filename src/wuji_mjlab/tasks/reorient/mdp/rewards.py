@@ -344,6 +344,7 @@ def fingertip_target_proximity(
   pad_offset: float = 0.005,
   angle_power: float = 2.0,
   finger_reduce: str = "mean",
+  finger_weights: tuple[float, ...] | None = None,
   ori_bound: float = 0.2,
   ori_margin: float = 0.3,
   pos_bound: float = 0.01,
@@ -373,6 +374,9 @@ def fingertip_target_proximity(
   factor is 1 without a position goal). ``gate_floor`` keeps a fraction of
   the term on far from the goal (gate = floor + (1 - floor) * tolerance), so
   the grasp formed early in the episode is already shaped.
+
+  ``finger_weights`` (one per fingertip target, thumb first, typically in
+  [0, 1]) scales each finger's term before the mean / sum; None weighs all 1.
   """
   command = env.command_manager.get_term(command_name)
   offset = command.fingertip_pos_w - command.fingertip_target_pos_w
@@ -382,6 +386,10 @@ def fingertip_target_proximity(
   facing = (1.0 - theta / math.pi).pow(angle_power)
   closeness = torch.exp(-(d - pad_offset).clamp_min(0.0) / scale)
   per_finger = closeness * facing
+  if finger_weights is not None:
+    per_finger = per_finger * torch.as_tensor(
+      finger_weights, dtype=per_finger.dtype, device=per_finger.device
+    )
   if finger_reduce == "mean":
     placement = per_finger.mean(dim=-1)
   elif finger_reduce == "sum":

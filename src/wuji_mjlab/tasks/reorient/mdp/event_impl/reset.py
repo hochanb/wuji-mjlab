@@ -78,13 +78,16 @@ def reset_object_orientation(
   env_ids,
   pos_noise: float = 0.01,
   max_angle: float | None = None,
+  roll_range: tuple[float, float] | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_OBJECT_CFG,
 ) -> None:
   """Reset the object at its default position (+- ``pos_noise`` per axis).
 
   ``max_angle`` None samples the orientation uniformly on SO(3); otherwise the
   default orientation is turned by a random rotation of at most ``max_angle``
-  [rad] (uniform SO(3) truncated, about a uniformly random axis).
+  [rad] (uniform SO(3) truncated, about a uniformly random axis). With
+  ``roll_range`` [rad] the object is first rolled about its own x axis by a
+  uniform angle in that range (applied before the ``max_angle`` turn).
   """
   env_ids = resolve_env_ids(env, env_ids)
   if env_ids.numel() == 0:
@@ -99,6 +102,12 @@ def reset_object_orientation(
   else:
     delta = random_quat_within_angle(n, max_angle, env.device)
     default_state[:, 3:7] = quat_mul(default_state[:, 3:7], delta)
+  if roll_range is not None:
+    roll = sample_uniform(roll_range[0], roll_range[1], (n,), env.device)
+    zero = torch.zeros_like(roll)
+    default_state[:, 3:7] = quat_mul(
+      default_state[:, 3:7], quat_from_euler_xyz(roll, zero, zero)
+    )
 
   positions = default_state[:, :3] + env.scene.env_origins[env_ids]
   if pos_noise > 0.0:

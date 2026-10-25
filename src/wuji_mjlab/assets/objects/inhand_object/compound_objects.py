@@ -159,7 +159,82 @@ def stapler_fingertip_targets(
   return (thumb, *fingers)
 
 
-COMPOUND_OBJECTS = {"stapler": stapler_parts}
+def smartphone_parts() -> list[Part]:
+  """Smartphone: a slab (12.15 x 6.48 x 0.8 cm, long axis x, top end +x,
+  screen +z) with a 3 x 4 grid of thin square keys (1.5 mm tall) on the front,
+  90% of the width wide and as far from the bottom (-x) edge as from the long
+  sides, two thin volume buttons on the upper left
+  side and a power button just above the middle of the right side (left / right
+  as seen facing the screen with the top up: +y / -y). Every part is a box
+  primitive, so collisions use the exact boxes rather than a mesh's convex
+  hull."""
+  body_color = (0.15, 0.15, 0.17, 1.0)
+  button_color = (0.75, 0.76, 0.78, 1.0)
+
+  body_hx, body_hy, body_hz = 0.06075, 0.0324, 0.004
+  # Key / pitch proportions of 8 mm keys at 10.5 mm (rows, along x) and 11 mm
+  # (columns, along y) pitch, scaled so the grid spans 90% of the width.
+  grid_w = 0.9 * 2 * body_hy
+  unit = grid_w / (2 * 11 + 8)
+  key_h, key_hz = 4 * unit, 0.00075
+  pitch_x, pitch_y = 10.5 * unit, 11 * unit
+  margin = body_hy - grid_w / 2
+  grid_cx = -body_hx + margin + 1.5 * pitch_x + key_h
+  z = body_hz + key_hz
+  keys = [
+    Part(
+      "box",
+      (key_h, key_h, key_hz),
+      (grid_cx + (row - 1.5) * pitch_x, (col - 1) * pitch_y, z),
+      button_color,
+    )
+    for row in range(4)
+    for col in range(3)
+  ]
+  side_hy, side_hz = 0.0005, 0.0015  # 1 mm proud of the side, 3 mm tall
+  y = body_hy + side_hy
+  side = [
+    Part("box", (0.006, side_hy, side_hz), (0.03645, y, 0.0), button_color),  # volume up
+    Part("box", (0.006, side_hy, side_hz), (0.02349, y, 0.0), button_color),  # volume down
+    Part("box", (0.008, side_hy, side_hz), (0.01215, -y, 0.0), button_color),  # power
+  ]
+  return [
+    Part("box", (body_hx, body_hy, body_hz), (0.0, 0.0, 0.0), body_color),
+    *keys,
+    *side,
+  ]
+
+
+def smartphone_key(parts: list[Part], row: int, col: int) -> Part:
+  """Front key at ``row`` / ``col`` (1-based) counted from the top left as seen
+  facing the screen with the top (+x) up. ``smartphone_parts`` lists the keys
+  row-major from the bottom (-x) row, each row from the right (-y)."""
+  return parts[1 + (4 - row) * 3 + (3 - col)]
+
+
+def smartphone_fingertip_targets(
+  thumb_key: tuple[int, int] = (2, 3),
+  finger_x: tuple[float, float, float, float] = (0.012, -0.007, -0.031, -0.052),
+) -> tuple[tuple[tuple[float, float, float], tuple[float, float, float]], ...]:
+  """Fingertip (point, outward direction) targets in the smartphone body frame.
+
+  Thumb first: the top face centre of the front key ``thumb_key`` (see
+  ``smartphone_key``). Index to pinky: on the left (+y) side face, mid
+  thickness, at ``finger_x`` along the long axis (pre-COM, top end +x).
+  """
+  parts = smartphone_parts()
+  com = _parts_com(parts)
+  body, key = parts[0], smartphone_key(parts, *thumb_key)
+
+  def target(point, normal):
+    return tuple((np.asarray(point) - com).round(5).tolist()), normal
+
+  thumb = target(np.asarray(key.pos) + (0.0, 0.0, key.size[2]), (0.0, 0.0, 1.0))
+  fingers = [target((x, body.size[1], 0.0), (0.0, 1.0, 0.0)) for x in finger_x]
+  return (thumb, *fingers)
+
+
+COMPOUND_OBJECTS = {"stapler": stapler_parts, "smartphone": smartphone_parts}
 
 
 def compound_spec(name: str) -> mujoco.MjSpec:
