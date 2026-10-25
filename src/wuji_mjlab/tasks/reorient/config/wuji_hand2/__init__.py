@@ -199,10 +199,13 @@ def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
       "command_name": "reorient_command",
       "scale": 0.02,
       "pad_offset": 0.005,  # depth of HAND2_TIP_PAD_POINTS inside the pad
+      "angle_power": 2.0,
+      "finger_reduce": "mean",
       "ori_bound": 0.2,
       "ori_margin": 0.3,
       "pos_bound": 0.01,
       "pos_margin": 0.02,
+      "gate_floor": 0.0,
     },
   )
   # The cube sensors match the object geom named "cube"; on a multi-geom object

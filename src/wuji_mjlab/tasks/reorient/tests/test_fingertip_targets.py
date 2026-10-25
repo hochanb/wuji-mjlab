@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import mujoco
 import numpy as np
+import pytest
 from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
   compound_spec,
   stapler_fingertip_targets,
@@ -39,7 +40,7 @@ def test_stapler_targets_layout():
   assert thumb[0] > 0.0, "thumb at the front (+x, away from the hinge)"
 
 
-def _reward(tip, ori_err=0.0, pos_err=0.0):
+def _reward(tip, ori_err=0.0, pos_err=0.0, **kwargs):
   from types import SimpleNamespace
 
   import torch
@@ -62,16 +63,17 @@ def _reward(tip, ori_err=0.0, pos_err=0.0):
     pos_error=lambda: torch.full((1,), pos_err),
   )
   env = SimpleNamespace(command_manager=SimpleNamespace(get_term=lambda _: command))
-  return float(fingertip_target_proximity(env, scale=0.02, pad_offset=0.0))
+  return float(fingertip_target_proximity(env, scale=0.02, pad_offset=0.0, **kwargs))
 
 
-def test_proximity_rewards_the_outer_side_only():
+def test_proximity_favours_the_outer_side():
   front = _reward([0.0, 0.0, 0.005])
-  behind = _reward([0.0, 0.0, -0.005])  # as close, but through the wall
+  behind = _reward([0.0, 0.0, -0.005])  # as close, but right through the wall
   beside = _reward([0.005, 0.0, 0.001])  # as close, but off to the side
+  oblique_behind = _reward([0.004, 0.0, -0.003])
   far = _reward([0.0, 0.0, 0.02])
-  assert behind == 0.0
-  assert front > beside > 0.0
+  assert behind < 1e-9
+  assert front > beside > oblique_behind > behind  # rises as the tip wraps round
   assert front > far > 0.0
 
 
@@ -82,3 +84,10 @@ def test_proximity_is_gated_by_the_goal_error():
   assert 0.0 < _reward(tip, ori_err=0.35) < at_goal  # inside the margin
   assert _reward(tip, ori_err=1.5) < 1e-3 * at_goal  # mid-rotation: off
   assert _reward(tip, pos_err=0.05) < 1e-3 * at_goal
+
+
+def test_gate_floor_keeps_a_fraction_far_from_the_goal():
+  tip = [0.0, 0.0, 0.005]
+  at_goal = _reward(tip, gate_floor=0.2)
+  assert at_goal == pytest.approx(_reward(tip))
+  assert _reward(tip, ori_err=2.5, gate_floor=0.2) == pytest.approx(0.2 * at_goal, rel=1e-3)
