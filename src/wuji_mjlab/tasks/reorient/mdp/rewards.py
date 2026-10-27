@@ -344,6 +344,7 @@ def fingertip_target_proximity(
   pad_offset: float = 0.005,
   angle_power: float = 2.0,
   finger_reduce: str = "mean",
+  finger_weights: tuple[float, ...] | None = None,
   ori_bound: float = 0.2,
   ori_margin: float = 0.3,
   pos_bound: float = 0.01,
@@ -373,6 +374,10 @@ def fingertip_target_proximity(
   factor is 1 without a position goal). ``gate_floor`` keeps a fraction of
   the term on far from the goal (gate = floor + (1 - floor) * tolerance), so
   the grasp formed early in the episode is already shaped.
+
+  ``finger_weights`` (one value in [0, 1] per target, in target order) weights
+  each finger's term: a weighted mean for ``"mean"``, a weighted sum for
+  ``"sum"``; ``None`` weights every finger 1.
   """
   command = env.command_manager.get_term(command_name)
   offset = command.fingertip_pos_w - command.fingertip_target_pos_w
@@ -382,10 +387,20 @@ def fingertip_target_proximity(
   facing = (1.0 - theta / math.pi).pow(angle_power)
   closeness = torch.exp(-(d - pad_offset).clamp_min(0.0) / scale)
   per_finger = closeness * facing
+  if finger_weights is None:
+    weights = torch.ones(per_finger.shape[-1], device=per_finger.device)
+  else:
+    if len(finger_weights) != per_finger.shape[-1] or not all(
+      0.0 <= w <= 1.0 for w in finger_weights
+    ):
+      raise ValueError(
+        f"finger_weights needs {per_finger.shape[-1]} values in [0, 1], got {finger_weights}"
+      )
+    weights = torch.tensor(finger_weights, device=per_finger.device)
   if finger_reduce == "mean":
-    placement = per_finger.mean(dim=-1)
+    placement = (per_finger * weights).sum(dim=-1) / weights.sum().clamp_min(1e-6)
   elif finger_reduce == "sum":
-    placement = per_finger.sum(dim=-1)
+    placement = (per_finger * weights).sum(dim=-1)
   else:
     raise ValueError(f"finger_reduce must be 'mean' or 'sum', got {finger_reduce!r}")
 
