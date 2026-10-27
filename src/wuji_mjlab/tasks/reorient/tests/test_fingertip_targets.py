@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import math
+
 import mujoco
 import numpy as np
 import pytest
+import torch
 from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
   compound_spec,
   stapler_fingertip_targets,
@@ -91,3 +94,33 @@ def test_gate_floor_keeps_a_fraction_far_from_the_goal():
   at_goal = _reward(tip, gate_floor=0.2)
   assert at_goal == pytest.approx(_reward(tip))
   assert _reward(tip, ori_err=2.5, gate_floor=0.2) == pytest.approx(0.2 * at_goal, rel=1e-3)
+
+
+def test_finger_weights_select_fingers():
+  from types import SimpleNamespace
+
+  from wuji_mjlab.tasks.reorient.mdp.rewards import fingertip_target_proximity
+
+  # Five tips at the target point offset along its outward normal: thumb and
+  # index touch (d = pad), the rest are 3 cm away.
+  d = torch.tensor([[0.005, 0.005, 0.035, 0.035, 0.035]])
+  target = torch.zeros(1, 5, 3)
+  tips = torch.zeros(1, 5, 3)
+  tips[..., 2] = d
+  command = SimpleNamespace(
+    fingertip_pos_w=tips,
+    fingertip_target_pos_w=target,
+    fingertip_target_dot=d,
+    object=SimpleNamespace(
+      data=SimpleNamespace(root_link_quat_w=torch.tensor([[1.0, 0, 0, 0]]))
+    ),
+    goal_quat=torch.tensor([[1.0, 0, 0, 0]]),
+    cfg=SimpleNamespace(goal_pos_range=None),
+  )
+  env = SimpleNamespace(command_manager=SimpleNamespace(get_term=lambda _: command))
+  thumb_only = fingertip_target_proximity(env, finger_weights=(1, 0, 0, 0, 0))
+  torch.testing.assert_close(thumb_only, torch.tensor([1.0]))
+  far_only = fingertip_target_proximity(env, finger_weights=(0, 0, 1, 1, 1))
+  torch.testing.assert_close(far_only, torch.tensor([math.exp(-0.03 / 0.02)]))
+  with pytest.raises(ValueError):
+    fingertip_target_proximity(env, finger_weights=(1, 0, 0))
