@@ -377,9 +377,12 @@ def fingertip_target_proximity(
 
   ``finger_weights`` (one value in [0, 1] per target, in target order) weights
   each finger's term: a weighted mean for ``"mean"``, a weighted sum for
-  ``"sum"``; ``None`` weights every finger 1.
+  ``"sum"``; ``None`` takes the command's ``fingertip_weights`` (every finger
+  1 if that is unset too).
   """
   command = env.command_manager.get_term(command_name)
+  if finger_weights is None:
+    finger_weights = getattr(command.cfg, "fingertip_weights", None)
   offset = command.fingertip_pos_w - command.fingertip_target_pos_w
   d = offset.norm(dim=-1)
   cos = command.fingertip_target_dot / d.clamp_min(1e-6)

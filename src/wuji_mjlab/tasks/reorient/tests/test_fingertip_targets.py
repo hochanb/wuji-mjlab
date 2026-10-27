@@ -124,3 +124,44 @@ def test_finger_weights_select_fingers():
   torch.testing.assert_close(far_only, torch.tensor([math.exp(-0.03 / 0.02)]))
   with pytest.raises(ValueError):
     fingertip_target_proximity(env, finger_weights=(1, 0, 0))
+
+
+def _gate(tips, weights):
+  from types import SimpleNamespace
+
+  from wuji_mjlab.tasks.reorient.mdp.commands import InHandReorientCommand
+
+  # Targets at the origin facing +z; tip reference points 5 mm inside the pad.
+  tips = torch.tensor([tips])
+  k = tips.shape[1]
+  command = SimpleNamespace(
+    fingertip_pos_w=tips,
+    fingertip_target_pos_w=torch.zeros(1, k, 3),
+    fingertip_target_dir_w=torch.tensor([0.0, 0.0, 1.0]).expand(1, k, 3),
+    cfg=SimpleNamespace(
+      tip_pad_depth=0.005,
+      success_fingertip_dist=0.01,
+      success_fingertip_angle=math.radians(60.0),
+    ),
+    _success_fingers=torch.tensor([w > 0.0 for w in weights]),
+  )
+  command.fingertip_on_target = lambda: InHandReorientCommand.fingertip_on_target(
+    command
+  )
+  on = InHandReorientCommand.fingertip_on_target(command)[0].tolist()
+  return on, bool(InHandReorientCommand.fingertips_in_place(command)[0])
+
+
+def test_fingertip_success_gate():
+  touching = [0.0, 0.0, 0.005]  # pad on the target
+  near = [0.0, 0.0, 0.014]  # pad 9 mm off
+  far = [0.0, 0.0, 0.016]  # pad 11 mm off
+  behind = [0.0, 0.0, -0.005]  # as close, but through the wall
+  side = [0.01, 0.0, 0.002]  # pad within 1 cm but 79 deg off the normal
+  on, ok = _gate([touching, near, far, behind, side], (1, 1, 1, 1, 1))
+  assert on == [True, True, False, False, False]
+  assert not ok
+  # Only the fingers weighted > 0 are required.
+  assert _gate([touching, near, far, behind, side], (1, 0.3, 0, 0, 0))[1]
+  assert not _gate([touching, near, far, behind, side], (1, 0, 0.5, 0, 0))[1]
+  assert _gate([far, far, far, far, far], (0, 0, 0, 0, 0))[1]

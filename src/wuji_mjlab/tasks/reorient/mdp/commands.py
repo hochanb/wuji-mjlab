@@ -72,6 +72,20 @@ class InHandReorientCommand(CommandTerm):
       self._tip_target_dir_b = torch.nn.functional.normalize(
         torch.tensor(dirs, device=self.device), dim=-1
       )
+      weights = cfg.fingertip_weights or (1.0,) * len(tip_ids)
+      if len(weights) != len(tip_ids) or not all(0.0 <= w <= 1.0 for w in weights):
+        raise ValueError(
+          f"InHandReorientCommand: fingertip_weights needs {len(tip_ids)} values "
+          f"in [0, 1], got {cfg.fingertip_weights}."
+        )
+      # Fingers the success gate requires (weight > 0).
+      self._success_fingers = torch.tensor(
+        [w > 0.0 for w in weights], device=self.device
+      )
+    if cfg.success_fingertip_dist is not None and not self._tip_site_ids:
+      raise ValueError(
+        "InHandReorientCommand: success_fingertip_dist needs fingertip_targets."
+      )
 
     # Goal pose lives in the wrist-tag frame: the task is to bring the object to
     # a pose relative to the wrist, so success, rewards and observations all see
@@ -143,6 +157,8 @@ class InHandReorientCommand(CommandTerm):
     self.metrics["window_timer"] = torch.zeros(self.num_envs, device=self.device)
     if cfg.goal_pos_range is not None:
       self.metrics["pos_error"] = torch.zeros(self.num_envs, device=self.device)
+    if cfg.success_fingertip_dist is not None:
+      self.metrics["fingertip_contact"] = torch.zeros(self.num_envs, device=self.device)
 
     self._visualization = ReorientCommandVisualization(entity_name=self.cfg.entity_name)
     # Without a compiled model (lightweight test envs) the plain box ghost is used.
@@ -187,6 +203,10 @@ class InHandReorientCommand(CommandTerm):
     self.metrics["window_timer"] = self.window_timer.float()
     if self.cfg.goal_pos_range is not None:
       self.metrics["pos_error"] = self.pos_error()
+    if self.cfg.success_fingertip_dist is not None:
+      # Fraction of the required fingers on their targets.
+      on = self.fingertip_on_target()[:, self._success_fingers]
+      self.metrics["fingertip_contact"] = on.float().mean(-1)
     self._visualization.update_status_gui(
       num_envs=self.num_envs,
       policy_status_for_env=self._policy_status_for_env,
@@ -255,6 +275,8 @@ class InHandReorientCommand(CommandTerm):
     if self.cfg.pos_success_threshold is not None:
       pos_err = self.pos_error()[selected]
       within_threshold = within_threshold & (pos_err < self.cfg.pos_success_threshold)
+    if self.cfg.success_fingertip_dist is not None:
+      within_threshold = within_threshold & self.fingertips_in_place()[selected]
 
     approaching_mask = ~self.in_success_window[selected]
     hold_counter = self.hold_counter[selected]
@@ -369,6 +391,21 @@ class InHandReorientCommand(CommandTerm):
     offset = self.fingertip_pos_w - self.fingertip_target_pos_w
     return (offset * self.fingertip_target_dir_w).sum(-1)
 
+  def fingertip_on_target(self) -> torch.Tensor:
+    """[N, K] each fingertip's pad within ``success_fingertip_dist`` of its
+    target point, on the outer side (offset within ``success_fingertip_angle``
+    of the target direction)."""
+    offset = self.fingertip_pos_w - self.fingertip_target_pos_w
+    d = offset.norm(dim=-1)
+    cos = (offset * self.fingertip_target_dir_w).sum(-1) / d.clamp_min(1e-6)
+    near = d - self.cfg.tip_pad_depth < self.cfg.success_fingertip_dist
+    facing = cos > math.cos(self.cfg.success_fingertip_angle)
+    return near & facing
+
+  def fingertips_in_place(self) -> torch.Tensor:
+    """[N] every finger with fingertip weight > 0 is on its target."""
+    return (self.fingertip_on_target() | ~self._success_fingers).all(dim=-1)
+
   def _debug_vis_impl(self, visualizer) -> None:
     self._visualization.draw_debug_visuals(
       visualizer=visualizer,
@@ -420,6 +457,8 @@ class InHandReorientCommand(CommandTerm):
     if self.cfg.pos_success_threshold is not None:
       pos_err = float(self.pos_error()[env_idx].item())
       is_success = is_success and pos_err < self.cfg.pos_success_threshold
+    if self.cfg.success_fingertip_dist is not None:
+      is_success = is_success and bool(self.fingertips_in_place()[env_idx])
     return ori_error_rad, is_success
 
   @property
@@ -471,6 +510,19 @@ class InHandReorientCommandCfg(CommandTermCfg):
   # Fingertip reference point per tip site, as an offset in that site's frame
   # (e.g. into the finger pad); None uses the site origins.
   tip_point_offsets: tuple[tuple[float, float, float], ...] | None = None
+  # Depth of that reference point inside the pad [m]: the pad is d - this
+  # from its target.
+  tip_pad_depth: float = 0.0
+  # Per-finger weights in [0, 1], in target order; None weights every finger
+  # 1. The fingertip_target reward uses them unless given its own, and the
+  # fingertip success gate requires the fingers weighted > 0.
+  fingertip_weights: tuple[float, ...] | None = None
+  # Fingertip success gate: success also needs every finger weighted > 0 to
+  # have its pad within this distance [m] of its target point, on the outer
+  # side (offset within success_fingertip_angle [rad] of the target
+  # direction). None leaves success to the object pose alone.
+  success_fingertip_dist: float | None = None
+  success_fingertip_angle: float = math.radians(60.0)
   debug_vis: bool = False
   robot_entity_name: str = "robot"
   palm_body_pattern: str = ".*_palm_link"

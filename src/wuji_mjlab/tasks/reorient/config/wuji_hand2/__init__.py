@@ -192,6 +192,11 @@ def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
   # Fingertip targets (shown in the viewer); the reward is off until weighted.
   cfg.commands["reorient_command"].fingertip_targets = stapler_fingertip_targets()
   cfg.commands["reorient_command"].tip_point_offsets = HAND2_TIP_PAD_POINTS
+  cfg.commands["reorient_command"].tip_pad_depth = 0.005
+  # Every finger counts for the fingertip reward, and success also needs each
+  # (weight > 0) within 1 cm of its target.
+  cfg.commands["reorient_command"].fingertip_weights = (1.0,) * 5
+  cfg.commands["reorient_command"].success_fingertip_dist = 0.01
   cfg.rewards["fingertip_target"] = RewardTermCfg(
     func=mdp.fingertip_target_proximity,
     weight=0.0,
@@ -416,37 +421,50 @@ def _with_fixed_goal(cfg, pos, quat):
   return cfg
 
 
-register_mjlab_task(
-  task_id="WujiHand2_ReorientStaplerFixedGoalWrist_50Hz",
-  env_cfg=_with_fixed_goal(
-    _with_wrist(
-      _with_random_start(
-        _with_stapler(
-          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE),
-          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
-        ),
-        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
-      )
-    ),
-    _STAPLER_CROSSWISE_POS,
-    _STAPLER_CROSSWISE_QUAT,
-  ),
-  play_env_cfg=_with_fixed_goal(
-    _with_wrist(
-      _with_random_start(
-        _with_stapler(
-          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True),
-          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
-        ),
-        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
-      )
-    ),
-    _STAPLER_CROSSWISE_POS,
-    _STAPLER_CROSSWISE_QUAT,
-  ),
-  rl_cfg=_wrist_rl_cfg(
+# Fingertip reward of the best stapler run so far (v10): summed over fingers,
+# a wide distance scale, a tight goal gate with a 0.2 floor, a narrower std
+# range, and one success per episode.
+_STAPLER_FINGERTIP_REWARD = {
+  "finger_reduce": "sum",
+  "scale": 0.04,
+  "ori_bound": 0.1,
+  "ori_margin": 0.15,
+  "pos_bound": 0.005,
+  "pos_margin": 0.01,
+  "gate_floor": 0.2,
+}
+_STAPLER_FINGERTIP_WEIGHT = 15.0
+_STAPLER_FIXED_GOAL_STD_RANGE = (0.1, 0.6)
+
+
+def _stapler_fixed_goal_cfg(play: bool = False):
+  cfg = _with_stapler(
+    _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=play),
+    rot=_STAPLER_FIXED_GOAL_INIT_ROT,
+  )
+  cfg = _with_wrist(_with_random_start(cfg, _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE))
+  cfg.rewards["fingertip_target"].weight = _STAPLER_FINGERTIP_WEIGHT
+  cfg.rewards["fingertip_target"].params.update(_STAPLER_FINGERTIP_REWARD)
+  cfg.commands["reorient_command"].single_success = True
+  return _with_fixed_goal(cfg, _STAPLER_CROSSWISE_POS, _STAPLER_CROSSWISE_QUAT)
+
+
+def _stapler_fixed_goal_rl_cfg():
+  cfg = _wrist_rl_cfg(
     "wuji_reorient_hand2_stapler_fixed_goal_wrist",
     "ReorientStaplerFixedGoalWrist_Hand2_50Hz",
-  ),
+  )
+  distribution = {
+    **cfg.actor.distribution_cfg,
+    "std_range": _STAPLER_FIXED_GOAL_STD_RANGE,
+  }
+  return replace(cfg, actor=replace(cfg.actor, distribution_cfg=distribution))
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientStaplerFixedGoalWrist_50Hz",
+  env_cfg=_stapler_fixed_goal_cfg(),
+  play_env_cfg=_stapler_fixed_goal_cfg(play=True),
+  rl_cfg=_stapler_fixed_goal_rl_cfg(),
   runner_cls=WujiOnPolicyRunner,
 )
