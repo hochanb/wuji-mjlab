@@ -2,6 +2,7 @@
 # Copyright 2026 Wuji Technology Co., Ltd.
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -73,11 +74,34 @@ def reset_root_pose_about_world_axes(
   )
 
 
+def _random_axis_tilt_roll(
+  quat: torch.Tensor, tilt_max: float, roll_range: tuple[float, float]
+) -> torch.Tensor:
+  """``quat`` rolled about its local x axis, then that axis tilted (see
+  ``reset_object_orientation``)."""
+  n, device = quat.shape[0], quat.device
+  zeros = torch.zeros(n, device=device)
+  roll = sample_uniform(roll_range[0], roll_range[1], (n,), device)
+  rolled = quat_mul(quat, quat_from_euler_xyz(roll, zeros, zeros))
+  axis = quat_apply(quat, torch.tensor([[1.0, 0.0, 0.0]], device=device).expand(n, 3))
+  # Tilt axis: random direction perpendicular to the default long axis.
+  v = torch.randn(n, 3, device=device)
+  u = v - (v * axis).sum(-1, keepdim=True) * axis
+  u = u / u.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+  # cos(tilt) uniform in [cos(tilt_max), 1]: the axis is uniform over the cap.
+  cos_t = 1.0 - torch.rand(n, device=device) * (1.0 - math.cos(min(tilt_max, math.pi)))
+  half = 0.5 * torch.acos(cos_t.clamp(-1.0, 1.0)).unsqueeze(-1)
+  tilt = torch.cat((torch.cos(half), u * torch.sin(half)), dim=-1)
+  return quat_mul(tilt, rolled)
+
+
 def reset_object_orientation(
   env,
   env_ids,
   pos_noise: float = 0.01,
   max_angle: float | None = None,
+  axis_tilt_max: float | None = None,
+  axis_roll_range: tuple[float, float] = (-math.pi, math.pi),
   asset_cfg: SceneEntityCfg = _DEFAULT_OBJECT_CFG,
 ) -> None:
   """Reset the object at its default position (+- ``pos_noise`` per axis).
@@ -85,6 +109,12 @@ def reset_object_orientation(
   ``max_angle`` None samples the orientation uniformly on SO(3); otherwise the
   default orientation is turned by a random rotation of at most ``max_angle``
   [rad] (uniform SO(3) truncated, about a uniformly random axis).
+
+  ``axis_tilt_max`` (overrides ``max_angle``) randomises about the object's
+  long (local x) axis instead: a roll about that axis uniform in
+  ``axis_roll_range``, then the axis tilted from its default direction by up
+  to ``axis_tilt_max`` [rad] towards a uniformly random azimuth, with the axis
+  direction uniform over that spherical cap.
   """
   env_ids = resolve_env_ids(env, env_ids)
   if env_ids.numel() == 0:
@@ -94,7 +124,11 @@ def reset_object_orientation(
   default_state = asset.data.default_root_state[env_ids].clone()
 
   n = env_ids.numel()
-  if max_angle is None:
+  if axis_tilt_max is not None:
+    default_state[:, 3:7] = _random_axis_tilt_roll(
+      default_state[:, 3:7], axis_tilt_max, axis_roll_range
+    )
+  elif max_angle is None:
     default_state[:, 3:7] = random_quat_uniform(n, env.device)
   else:
     delta = random_quat_within_angle(n, max_angle, env.device)

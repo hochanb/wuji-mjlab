@@ -159,7 +159,84 @@ def stapler_fingertip_targets(
   return (thumb, *fingers)
 
 
-COMPOUND_OBJECTS = {"stapler": stapler_parts}
+_CYL_ALONG_X = (float(np.cos(np.pi / 4)), 0.0, float(np.sin(np.pi / 4)), 0.0)
+
+# Flashlight (long axis x, head at +x): body tube, a slightly thicker head and a
+# thin flat slide switch on the body's +z side, a little towards the head.
+FLASHLIGHT_SCALE = 1.2  # on the 2.6 cm x 11 cm body below
+FLASHLIGHT_BODY_RADIUS = 0.013 * FLASHLIGHT_SCALE  # 3.12 cm diameter
+# The body's front end (where the head attaches) is fixed; its tail quarter is
+# cut off: 13.2 cm -> 9.9 cm.
+FLASHLIGHT_BODY_FRONT_X = 0.055 * FLASHLIGHT_SCALE
+FLASHLIGHT_BODY_HALF_LENGTH = 0.055 * FLASHLIGHT_SCALE * 0.75  # 9.9 cm
+FLASHLIGHT_HEAD_RADIUS = 0.016 * FLASHLIGHT_SCALE  # 3.84 cm diameter
+FLASHLIGHT_HEAD_HALF_LENGTH = 0.015 * FLASHLIGHT_SCALE  # 3.6 cm
+FLASHLIGHT_SWITCH_HALF = tuple(
+  h * FLASHLIGHT_SCALE for h in (0.006, 0.004, 0.0015)
+)  # 1.44 x 0.96 x 0.36 cm
+FLASHLIGHT_SWITCH_X = (
+  0.015 * FLASHLIGHT_SCALE
+)  # switch centre (x = 0: uncut body middle)
+
+
+def flashlight_parts() -> list[Part]:
+  """Flashlight: body cylinder, thicker head cylinder at +x, slide switch on +z."""
+  body_r, body_hl = FLASHLIGHT_BODY_RADIUS, FLASHLIGHT_BODY_HALF_LENGTH
+  sx, sy, sz = FLASHLIGHT_SWITCH_HALF
+  return [
+    Part(
+      "cylinder",
+      (body_r, body_hl),
+      (FLASHLIGHT_BODY_FRONT_X - body_hl, 0.0, 0.0),
+      (0.15, 0.15, 0.17, 1.0),
+      _CYL_ALONG_X,
+    ),
+    Part(
+      "cylinder",
+      (FLASHLIGHT_HEAD_RADIUS, FLASHLIGHT_HEAD_HALF_LENGTH),
+      (FLASHLIGHT_BODY_FRONT_X + FLASHLIGHT_HEAD_HALF_LENGTH, 0.0, 0.0),
+      (0.75, 0.76, 0.78, 1.0),
+      _CYL_ALONG_X,
+    ),
+    Part(
+      "box",
+      (sx, sy, sz),
+      (FLASHLIGHT_SWITCH_X, 0.0, body_r + sz),
+      (0.9, 0.35, 0.05, 1.0),
+    ),
+  ]
+
+
+def flashlight_fingertip_targets(
+  finger_x: tuple[float, float, float, float],
+  finger_angles: tuple[float, float, float, float],
+) -> tuple[tuple[tuple[float, float, float], tuple[float, float, float]], ...]:
+  """Fingertip (point, outward direction) targets in the flashlight body frame.
+
+  Thumb first: on top of the slide switch. Index to pinky: on the body surface
+  at axial position ``finger_x[i]`` (body frame, before COM centring) and angle
+  ``finger_angles[i]`` about the long axis, measured from +z (the switch side)
+  towards +y. See ``InHandReorientCommandCfg.fingertip_targets``.
+  """
+  com = _parts_com(flashlight_parts())
+  sx, sy, sz = FLASHLIGHT_SWITCH_HALF
+  r = FLASHLIGHT_BODY_RADIUS
+
+  def target(point, direction):
+    return (
+      tuple((np.asarray(point) - com).round(5).tolist()),
+      tuple(np.asarray(direction).round(5).tolist()),
+    )
+
+  thumb = target((FLASHLIGHT_SWITCH_X, 0.0, r + 2 * sz), (0.0, 0.0, 1.0))
+  fingers = []
+  for x, angle in zip(finger_x, finger_angles, strict=True):
+    n = np.array([0.0, np.sin(angle), np.cos(angle)])
+    fingers.append(target((x, *(r * n[1:])), n))
+  return (thumb, *fingers)
+
+
+COMPOUND_OBJECTS = {"stapler": stapler_parts, "flashlight": flashlight_parts}
 
 
 def compound_spec(name: str) -> mujoco.MjSpec:

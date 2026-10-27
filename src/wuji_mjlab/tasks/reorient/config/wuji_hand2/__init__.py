@@ -13,11 +13,13 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
+  flashlight_fingertip_targets,
   get_compound_object_cfg,
   stapler_fingertip_targets,
 )
@@ -25,7 +27,11 @@ from wuji_mjlab.rl.runner import WujiOnPolicyRunner
 from wuji_mjlab.tasks.reorient import mdp
 
 from .env_cfgs import wuji_hand2_reorient_env_cfg
-from .hand2_constants import HAND2_TIP_PAD_POINTS, REORIENT_HAND2_CUBE_INIT_POS
+from .hand2_constants import (
+  HAND2_TIP_PAD_POINTS,
+  REORIENT_HAND2_CUBE_INIT_POS,
+  REORIENT_HAND2_MOUNT_PITCH,
+)
 from .rsl_rl.ppo import wuji_hand2_reorient_ppo_runner_cfg
 from .wrist import (
   WRIST_JOINT_NAMES,
@@ -184,13 +190,21 @@ _STAPLER_INIT_LIFT = 0.04
 
 def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
   """Swap the cube for the stapler in a reorient env cfg (start pose ``rot``)."""
+  return _with_compound_object(cfg, "stapler", stapler_fingertip_targets(), rot)
+
+
+def _with_compound_object(
+  cfg, name, fingertip_targets, rot=(1.0, 0.0, 0.0, 0.0), lift=_STAPLER_INIT_LIFT
+):
+  """Swap the cube for a compound primitive object (start pose ``rot``, dropped
+  from ``lift`` above the cube start) with its fingertip targets."""
   x, y, z = REORIENT_HAND2_CUBE_INIT_POS["right"]
-  stapler = get_compound_object_cfg("stapler")
-  stapler.init_state.pos = (x, y, z + _STAPLER_INIT_LIFT)
-  stapler.init_state.rot = rot
-  cfg.scene.entities["object"] = stapler
+  obj = get_compound_object_cfg(name)
+  obj.init_state.pos = (x, y, z + lift)
+  obj.init_state.rot = rot
+  cfg.scene.entities["object"] = obj
   # Fingertip targets (shown in the viewer); the reward is off until weighted.
-  cfg.commands["reorient_command"].fingertip_targets = stapler_fingertip_targets()
+  cfg.commands["reorient_command"].fingertip_targets = fingertip_targets
   cfg.commands["reorient_command"].tip_point_offsets = HAND2_TIP_PAD_POINTS
   cfg.rewards["fingertip_target"] = RewardTermCfg(
     func=mdp.fingertip_target_proximity,
@@ -447,6 +461,87 @@ register_mjlab_task(
   rl_cfg=_wrist_rl_cfg(
     "wuji_reorient_hand2_stapler_fixed_goal_wrist",
     "ReorientStaplerFixedGoalWrist_Hand2_50Hz",
+  ),
+  runner_cls=WujiOnPolicyRunner,
+)
+
+
+def _quat_mul(a, b):
+  """Hamilton product of two (w, x, y, z) quaternions."""
+  aw, ax, ay, az = a
+  bw, bx, by, bz = b
+  return (
+    aw * bw - ax * bx - ay * by - az * bz,
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+  )
+
+
+# Flashlight (compound primitive object): fixed grasp goal lying diagonally on
+# the palm. The long axis is turned 35 deg from the palm width (head towards the
+# thumb) towards the fingers, the COM sits 5.5 cm along the fingers from the
+# palm origin, centred across the palm, with the body 3 mm above the palm
+# collision surface, and the object is rolled about its axis so the slide
+# switch faces the thumb tip. Tag frame.
+_FLASHLIGHT_GOAL_POS = (-0.1181, -0.0009, -0.0016)
+_FLASHLIGHT_GOAL_QUAT = (0.4256, 0.0611, 0.1283, 0.8937)
+# Fingertip targets: thumb on the switch; index to pinky spaced 2.77 cm along
+# the (tail-cut) body, index nearest the head, on the side the curled fingers
+# wrap onto, between the palm normal and the finger direction (55.7 deg from
+# the switch side).
+_FLASHLIGHT_FINGERTIP_TARGETS = flashlight_fingertip_targets(
+  finger_x=(0.058, 0.0303, 0.0027, -0.025),
+  finger_angles=(0.9715,) * 4,
+)
+# Start: the goal orientation (in the world at the rest wrist pose, where the
+# wrist tag is the mount pitch), rolled about the long (red) axis uniformly in
+# [-180, 180] deg and the long axis tilted by up to 60 deg from the goal's in a
+# random direction; dropped from 8 cm above the cube start, the lowest height
+# with no >2 mm hand overlap at fully random orientations (4 cm: 13.7%).
+_FLASHLIGHT_INIT_ROT = tuple(
+  _quat_mul(
+    (
+      math.cos(0.5 * REORIENT_HAND2_MOUNT_PITCH),
+      0.0,
+      math.sin(0.5 * REORIENT_HAND2_MOUNT_PITCH),
+      0.0,
+    ),
+    _FLASHLIGHT_GOAL_QUAT,
+  )
+)
+_FLASHLIGHT_INIT_TILT_MAX = math.radians(60.0)
+_FLASHLIGHT_INIT_LIFT = 0.08
+
+
+def _flashlight_fixed_goal_cfg(play: bool = False):
+  cfg = _reorient_pos_hand2_50hz_env_cfg(_GOAL_POS_RANGE, play=play)
+  cfg = _with_compound_object(
+    cfg,
+    "flashlight",
+    _FLASHLIGHT_FINGERTIP_TARGETS,
+    rot=_FLASHLIGHT_INIT_ROT,
+    lift=_FLASHLIGHT_INIT_LIFT,
+  )
+  # Only the thumb's target (on the slide switch) counts for now.
+  cfg.rewards["fingertip_target"].params["finger_weights"] = (1.0, 0.0, 0.0, 0.0, 0.0)
+  cfg = _with_random_start(cfg, None)
+  cfg.events["reset_object_pose"].params["axis_tilt_max"] = _FLASHLIGHT_INIT_TILT_MAX
+  # A dropped flashlight can spin up numerically and blow up; end it first.
+  cfg.terminations["object_speed_limit"] = TerminationTermCfg(
+    func=mdp.object_speed_limit
+  )
+  cfg = _with_wrist(cfg)
+  return _with_fixed_goal(cfg, _FLASHLIGHT_GOAL_POS, _FLASHLIGHT_GOAL_QUAT)
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientFlashlightFixedGoalWrist_50Hz",
+  env_cfg=_flashlight_fixed_goal_cfg(),
+  play_env_cfg=_flashlight_fixed_goal_cfg(play=True),
+  rl_cfg=_wrist_rl_cfg(
+    "wuji_reorient_hand2_flashlight_fixed_goal_wrist",
+    "ReorientFlashlightFixedGoalWrist_Hand2_50Hz",
   ),
   runner_cls=WujiOnPolicyRunner,
 )
