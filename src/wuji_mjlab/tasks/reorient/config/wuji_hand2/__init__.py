@@ -452,7 +452,9 @@ _SGCRL_GOAL_DEPENDENT_TERMS = (
 _SGCRL_EPISODE_LENGTH_S = 20.0
 
 
-def _with_sgcrl(cfg):
+def _with_sgcrl(cfg, contact: bool = False):
+  """``contact``: the state also holds the fingertip target points and normals,
+  and the goal appends the per-finger contact error (zero in the target)."""
   command = {"command_name": "reorient_command"}
   state_terms = {
     name: term
@@ -467,6 +469,16 @@ def _with_sgcrl(cfg):
   }
   # The single commanded goal, in the same layout.
   target_terms = {"goal": ObservationTermCfg(func=mdp.goal_pose_in_tag, params=command)}
+  if contact:
+    state_terms["fingertip_targets"] = ObservationTermCfg(
+      func=mdp.fingertip_targets_in_tag, params=command
+    )
+    goal_terms["contact_error"] = ObservationTermCfg(
+      func=mdp.fingertip_contact_error, params=command
+    )
+    target_terms["contact_error"] = ObservationTermCfg(
+      func=mdp.goal_fingertip_contact_error, params=command
+    )
   cfg.observations["crl_state"] = ObservationGroupCfg(terms=state_terms)
   cfg.observations["crl_goal"] = ObservationGroupCfg(terms=goal_terms)
   cfg.observations["crl_target"] = ObservationGroupCfg(terms=target_terms)
@@ -482,5 +494,15 @@ register_mjlab_task(
   rl_cfg=SgcrlCfg(
     experiment_name="wuji_reorient_hand2_stapler_fixed_goal_sgcrl",
     run_name="ReorientStaplerFixedGoalWrist_SGCRL_Hand2_50Hz",
+  ),
+)
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientStaplerFixedGoalWrist_SGCRLContact_50Hz",
+  env_cfg=_with_sgcrl(_stapler_fixed_goal_cfg(), contact=True),
+  play_env_cfg=_with_sgcrl(_stapler_fixed_goal_cfg(play=True), contact=True),
+  rl_cfg=SgcrlCfg(
+    experiment_name="wuji_reorient_hand2_stapler_fixed_goal_sgcrl_contact",
+    run_name="ReorientStaplerFixedGoalWrist_SGCRLContact_Hand2_50Hz",
   ),
 )

@@ -181,6 +181,52 @@ def goal_pose_in_tag(env, command_name: str) -> torch.Tensor:
   return torch.cat((command.goal_pos_tag, rot_6d(command.goal_quat_tag)), dim=-1)
 
 
+def _in_tag(env, vec_w: torch.Tensor, tag_cfg: SceneEntityCfg) -> torch.Tensor:
+  """[N, K, 3] world vectors rotated into the tag frame."""
+  robot: Entity = env.scene[tag_cfg.name]
+  _, tag_quat_w = tag_pose_w(robot, _resolve_tag_site_ids(robot, tag_cfg))
+  quat = tag_quat_w.unsqueeze(1).expand(-1, vec_w.shape[1], -1)
+  return quat_apply_inverse(quat, vec_w)
+
+
+def fingertip_targets_in_tag(
+  env,
+  command_name: str,
+  tag_cfg: SceneEntityCfg = _DEFAULT_TAG_CFG,
+) -> torch.Tensor:
+  """Fingertip target points and their outward normals in the tag frame:
+  ``[points (K x 3), normals (K x 3)]``."""
+  command = env.command_manager.get_term(command_name)
+  robot: Entity = env.scene[tag_cfg.name]
+  tag_pos_w, _ = tag_pose_w(robot, _resolve_tag_site_ids(robot, tag_cfg))
+  points = _in_tag(
+    env, command.fingertip_target_pos_w - tag_pos_w.unsqueeze(1), tag_cfg
+  )
+  normals = _in_tag(env, command.fingertip_target_dir_w, tag_cfg)
+  return torch.cat((points.flatten(1), normals.flatten(1)), dim=-1)
+
+
+def fingertip_contact_error(
+  env, command_name: str, pad_depth: float = 0.005
+) -> torch.Tensor:
+  """Per-finger offset of the tip reference point from where it sits when its
+  pad touches the target (target + ``pad_depth`` along the normal), in the
+  object frame: [N, K * 3], zero with every pad on its target."""
+  command = env.command_manager.get_term(command_name)
+  contact = command.fingertip_target_pos_w + pad_depth * command.fingertip_target_dir_w
+  offset = command.fingertip_pos_w - contact
+  quat = command.object.data.root_link_quat_w.unsqueeze(1).expand(
+    -1, offset.shape[1], -1
+  )
+  return quat_apply_inverse(quat, offset).flatten(1)
+
+
+def goal_fingertip_contact_error(env, command_name: str) -> torch.Tensor:
+  """The commanded contact error: every pad on its target."""
+  command = env.command_manager.get_term(command_name)
+  return torch.zeros(env.num_envs, 3 * len(command._tip_site_ids), device=env.device)
+
+
 def palm_rot_6d_w(
   env,
   asset_cfg: SceneEntityCfg = _DEFAULT_PALM_CFG,

@@ -143,3 +143,50 @@ def test_trainer_acts_and_updates(sgcrl_env, tmp_path):
   action = trainer.act(sgcrl_env.observation_manager.compute())
   assert action.shape == (2, sgcrl_env.action_manager.total_action_dim)
   assert torch.all(action.abs() <= 1.0)
+
+
+def test_contact_error_is_zero_on_target_and_in_the_object_frame():
+  from types import SimpleNamespace
+
+  from wuji_mjlab.tasks.reorient import mdp
+
+  # Object turned 90 deg about z; one target at (0.1, 0, 0) with normal +x
+  # (world), so the touching tip reference point sits 5 mm further out.
+  quat = torch.tensor([[math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4)]])
+
+  def error(tip):
+    command = SimpleNamespace(
+      fingertip_target_pos_w=torch.tensor([[[0.1, 0.0, 0.0]]]),
+      fingertip_target_dir_w=torch.tensor([[[1.0, 0.0, 0.0]]]),
+      fingertip_pos_w=torch.tensor([[tip]]),
+      object=SimpleNamespace(data=SimpleNamespace(root_link_quat_w=quat)),
+    )
+    env = SimpleNamespace(command_manager=SimpleNamespace(get_term=lambda _: command))
+    return mdp.fingertip_contact_error(env, "reorient_command", pad_depth=0.005)
+
+  torch.testing.assert_close(error([0.105, 0.0, 0.0]), torch.zeros(1, 3))
+  # 1 cm off along world +y is object +x after the 90 deg turn about z.
+  torch.testing.assert_close(
+    error([0.105, 0.01, 0.0]), torch.tensor([[0.01, 0.0, 0.0]]), atol=1e-6, rtol=0
+  )
+
+
+def test_sgcrl_contact_groups():
+  import wuji_mjlab.tasks  # noqa: F401
+  from mjlab.envs import ManagerBasedRlEnv
+  from mjlab.tasks.registry import load_env_cfg
+
+  cfg = load_env_cfg("WujiHand2_ReorientStaplerFixedGoalWrist_SGCRLContact_50Hz")
+  cfg.scene.num_envs = 2
+  env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
+  try:
+    obs, _ = env.reset()
+    base = load_env_cfg(_TASK)
+    assert obs["crl_goal"].shape[-1] == obs["crl_target"].shape[-1] == 9 + 15
+    assert torch.all(obs["crl_target"][:, 9:] == 0.0)
+    state_dim = obs["crl_state"].shape[-1]
+    assert "fingertip_targets" in cfg.observations["crl_state"].terms
+    assert "fingertip_targets" not in base.observations["crl_state"].terms
+    assert state_dim > 30
+  finally:
+    env.close()
