@@ -41,6 +41,8 @@ pyglet = ">=1.5,<2"
 [feature.train.tasks]
 train = { cmd = "python scripts/train/train_rsl_rl.py", description = "Train a task with rsl_rl (append --task and overrides)" }
 play = { cmd = "python scripts/play/play_rsl_rl.py", description = "Play/infer from rsl_rl checkpoint" }
+train-sgcrl = { cmd = "python scripts/train/train_sgcrl.py", description = "Train an SGCRL task (append --task and overrides)" }
+play-sgcrl = { cmd = "python scripts/play/play_sgcrl.py", description = "Play an SGCRL checkpoint in the viser viewer" }
 list-envs = { cmd = "python scripts/list_envs.py", description = "List Wuji tasks (pass --all to include upstream examples)" }
 export-onnx = { cmd = "python -m wuji_mjlab.rl.onnx_export", description = "Export an rsl_rl checkpoint to <run dir>/policy.onnx (append <model_N.pt>)" }
 
