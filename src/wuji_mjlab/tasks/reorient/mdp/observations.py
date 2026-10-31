@@ -155,6 +155,32 @@ def goal_rot_err_6d(
   return ori_error
 
 
+def rot_6d(quat: torch.Tensor) -> torch.Tensor:
+  """6D rotation (rows 2-3 of the rotation matrix, as ``goal_rot_err_6d``)."""
+  rot = matrix_from_quat(quat)
+  return rot.reshape(*rot.shape[:-2], 9)[..., 3:]
+
+
+def cube_rot_6d_in_tag(
+  env,
+  object_cfg: SceneEntityCfg = _DEFAULT_OBJECT_CFG,
+  robot_cfg: SceneEntityCfg = _DEFAULT_PALM_CFG,
+  tag_cfg: SceneEntityCfg = _DEFAULT_TAG_CFG,
+) -> torch.Tensor:
+  """Cube orientation in the tag frame as a 6D rotation (goal-free)."""
+  obj: Entity = env.scene[object_cfg.name]
+  robot: Entity = env.scene[robot_cfg.name]
+  _, tag_quat_w = tag_pose_w(robot, _resolve_tag_site_ids(robot, tag_cfg))
+  return rot_6d(quat_mul(quat_inv(tag_quat_w), obj.data.root_link_quat_w))
+
+
+def goal_pose_in_tag(env, command_name: str) -> torch.Tensor:
+  """Commanded goal pose in the tag frame: ``[pos (3), rot 6D (6)]``, the same
+  layout as ``[cube_pos_in_tag, cube_rot_6d_in_tag]``."""
+  command = env.command_manager.get_term(command_name)
+  return torch.cat((command.goal_pos_tag, rot_6d(command.goal_quat_tag)), dim=-1)
+
+
 def palm_rot_6d_w(
   env,
   asset_cfg: SceneEntityCfg = _DEFAULT_PALM_CFG,

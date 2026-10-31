@@ -10,7 +10,7 @@ from mjlab.actuator import XmlActuatorCfg
 from mjlab.envs.mdp.events import reset_root_state_uniform
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch
@@ -22,6 +22,7 @@ from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
   stapler_fingertip_targets,
 )
 from wuji_mjlab.rl.runner import WujiOnPolicyRunner
+from wuji_mjlab.rl.sgcrl.config import SgcrlCfg
 from wuji_mjlab.tasks.reorient import mdp
 
 from .env_cfgs import wuji_hand2_reorient_env_cfg
@@ -416,37 +417,70 @@ def _with_fixed_goal(cfg, pos, quat):
   return cfg
 
 
+def _stapler_fixed_goal_cfg(play: bool = False):
+  cfg = _with_stapler(
+    _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=play),
+    rot=_STAPLER_FIXED_GOAL_INIT_ROT,
+  )
+  cfg = _with_wrist(_with_random_start(cfg, _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE))
+  return _with_fixed_goal(cfg, _STAPLER_CROSSWISE_POS, _STAPLER_CROSSWISE_QUAT)
+
+
 register_mjlab_task(
   task_id="WujiHand2_ReorientStaplerFixedGoalWrist_50Hz",
-  env_cfg=_with_fixed_goal(
-    _with_wrist(
-      _with_random_start(
-        _with_stapler(
-          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE),
-          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
-        ),
-        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
-      )
-    ),
-    _STAPLER_CROSSWISE_POS,
-    _STAPLER_CROSSWISE_QUAT,
-  ),
-  play_env_cfg=_with_fixed_goal(
-    _with_wrist(
-      _with_random_start(
-        _with_stapler(
-          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True),
-          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
-        ),
-        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
-      )
-    ),
-    _STAPLER_CROSSWISE_POS,
-    _STAPLER_CROSSWISE_QUAT,
-  ),
+  env_cfg=_stapler_fixed_goal_cfg(),
+  play_env_cfg=_stapler_fixed_goal_cfg(play=True),
   rl_cfg=_wrist_rl_cfg(
     "wuji_reorient_hand2_stapler_fixed_goal_wrist",
     "ReorientStaplerFixedGoalWrist_Hand2_50Hz",
   ),
   runner_cls=WujiOnPolicyRunner,
+)
+
+
+# Single-goal contrastive RL (SGCRL, scripts/train/train_sgcrl.py): the same
+# env with goal-free observation groups. Its trainer ignores the rewards; the
+# success-driven curricula are dropped, so the wrist has its full range.
+_SGCRL_GOAL_DEPENDENT_TERMS = (
+  "cube_pos_in_tag",  # noisy copy; cube_pos_in_tag_clean stays
+  "cube_ori_error",
+  "cube_ori_error_clean",
+  "goal_pos_err",
+  "goal_pos_err_clean",
+  "state_progress",
+)
+_SGCRL_EPISODE_LENGTH_S = 20.0
+
+
+def _with_sgcrl(cfg):
+  command = {"command_name": "reorient_command"}
+  state_terms = {
+    name: term
+    for name, term in cfg.observations["critic"].terms.items()
+    if name not in _SGCRL_GOAL_DEPENDENT_TERMS
+  }
+  state_terms["cube_rot_6d"] = ObservationTermCfg(func=mdp.cube_rot_6d_in_tag)
+  # Achieved goal: the object pose in the wrist-tag frame.
+  goal_terms = {
+    "pos": ObservationTermCfg(func=mdp.cube_pos_in_tag),
+    "rot": ObservationTermCfg(func=mdp.cube_rot_6d_in_tag),
+  }
+  # The single commanded goal, in the same layout.
+  target_terms = {"goal": ObservationTermCfg(func=mdp.goal_pose_in_tag, params=command)}
+  cfg.observations["crl_state"] = ObservationGroupCfg(terms=state_terms)
+  cfg.observations["crl_goal"] = ObservationGroupCfg(terms=goal_terms)
+  cfg.observations["crl_target"] = ObservationGroupCfg(terms=target_terms)
+  cfg.curriculum = {}
+  cfg.episode_length_s = _SGCRL_EPISODE_LENGTH_S
+  return cfg
+
+
+register_mjlab_task(
+  task_id="WujiHand2_ReorientStaplerFixedGoalWrist_SGCRL_50Hz",
+  env_cfg=_with_sgcrl(_stapler_fixed_goal_cfg()),
+  play_env_cfg=_with_sgcrl(_stapler_fixed_goal_cfg(play=True)),
+  rl_cfg=SgcrlCfg(
+    experiment_name="wuji_reorient_hand2_stapler_fixed_goal_sgcrl",
+    run_name="ReorientStaplerFixedGoalWrist_SGCRL_Hand2_50Hz",
+  ),
 )
