@@ -349,10 +349,14 @@ def fingertip_target_proximity(
   pos_bound: float = 0.01,
   pos_margin: float = 0.02,
   gate_floor: float = 0.0,
+  combine: str = "product",
+  finger_weights: tuple[float, ...] | None = None,
 ) -> torch.Tensor:
   """Mean (or sum, ``finger_reduce``) over fingers of exp(-max(0, d - pad_offset) / scale)
   * (1 - theta / pi) ** angle_power, weighted by how close the object is to
-  its goal pose.
+  its goal pose. ``combine="sum"`` averages the two factors instead of
+  multiplying them, so the facing term keeps its slope far from the target;
+  ``finger_weights`` weights the fingers (in target order) before the reduce.
 
   The exponential (not Gaussian) keeps a usable slope several ``scale`` away
   and is steepest at contact. ``pad_offset`` is the depth of the reference
@@ -381,7 +385,14 @@ def fingertip_target_proximity(
   theta = torch.acos(cos.clamp(-1.0, 1.0))
   facing = (1.0 - theta / math.pi).pow(angle_power)
   closeness = torch.exp(-(d - pad_offset).clamp_min(0.0) / scale)
-  per_finger = closeness * facing
+  if combine == "product":
+    per_finger = closeness * facing
+  elif combine == "sum":
+    per_finger = 0.5 * (closeness + facing)
+  else:
+    raise ValueError(f"combine must be 'product' or 'sum', got {combine!r}")
+  if finger_weights is not None:
+    per_finger = per_finger * torch.tensor(finger_weights, device=per_finger.device)
   if finger_reduce == "mean":
     placement = per_finger.mean(dim=-1)
   elif finger_reduce == "sum":

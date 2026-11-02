@@ -307,3 +307,18 @@ def dr_params_privileged(
 def wrist_pose(env, action_name: str = "wrist_pose") -> torch.Tensor:
   """Applied wrist ``[rotvec, translation]`` offset, normalised by its limits."""
   return env.action_manager.get_term(action_name).wrist_offset_normalized
+
+
+def fingertip_target_error(
+  env, command_name: str = "reorient_command", pad_offset: float = 0.005
+) -> torch.Tensor:
+  """Per-finger offset of the tip reference point from where it sits when its
+  pad touches the target (target + ``pad_offset`` along the outward normal), in
+  the object frame: [N, K * 3], zero with every pad on its target."""
+  command = env.command_manager.get_term(command_name)
+  touch = command.fingertip_target_pos_w + pad_offset * command.fingertip_target_dir_w
+  offset = command.fingertip_pos_w - touch
+  quat = command.object.data.root_link_quat_w.unsqueeze(1).expand(
+    -1, offset.shape[1], -1
+  )
+  return quat_apply_inverse(quat, offset).flatten(1)

@@ -19,7 +19,6 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
   get_compound_object_cfg,
-  stapler_fingertip_targets,
 )
 from wuji_mjlab.rl.runner import WujiOnPolicyRunner
 from wuji_mjlab.tasks.reorient import mdp
@@ -180,6 +179,33 @@ register_mjlab_task(
 # its upright pose: a 13 cm object at a uniformly random orientation would start
 # interpenetrating the hand.
 _STAPLER_INIT_LIFT = 0.04
+# Fingertip targets from a stapler wrap grasp found in simulation (thumb on the
+# front of the top plate, index under the front of the base, middle/ring/pinky
+# around the base's +y side): each tip reference point (tip site +
+# HAND2_TIP_PAD_POINTS) in the stapler frame [m], with the negated pad
+# direction (tip site -y) as its outward normal, thumb to pinky.
+_STAPLER_WRAP_TIP_REFS = (
+  ((0.04686, -0.00468, 0.03954), (0.0, -0.601, 0.799)),
+  ((0.04790, -0.00170, -0.02961), (0.630, 0.305, -0.714)),
+  ((0.01680, 0.02123, -0.02517), (-0.010, 0.995, 0.102)),
+  ((-0.01430, 0.02043, -0.01750), (-0.270, 0.807, 0.525)),
+  ((-0.03156, 0.02020, -0.02109), (-0.195, 0.768, 0.610)),
+)
+_TIP_PAD_DEPTH = 0.005  # depth of HAND2_TIP_PAD_POINTS inside the pad
+
+
+def _touch_point(ref, normal):
+  """Target point (on the pad surface) for a tip reference point and normal."""
+  n = math.sqrt(sum(c * c for c in normal))
+  return (
+    tuple(
+      round(r - _TIP_PAD_DEPTH * c / n, 5) for r, c in zip(ref, normal, strict=True)
+    ),
+    tuple(c / n for c in normal),
+  )
+
+
+_STAPLER_WRAP_TIP_TARGETS = tuple(_touch_point(*t) for t in _STAPLER_WRAP_TIP_REFS)
 
 
 def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
@@ -189,24 +215,40 @@ def _with_stapler(cfg, rot=(1.0, 0.0, 0.0, 0.0)):
   stapler.init_state.pos = (x, y, z + _STAPLER_INIT_LIFT)
   stapler.init_state.rot = rot
   cfg.scene.entities["object"] = stapler
-  # Fingertip targets (shown in the viewer); the reward is off until weighted.
-  cfg.commands["reorient_command"].fingertip_targets = stapler_fingertip_targets()
+  # Fingertip targets, rewarded at all times (no object pose gate): per finger
+  # the mean of the closeness and facing terms, so facing keeps its slope far
+  # from the target; summed over fingers with thumb/index over the others.
+  cfg.commands["reorient_command"].fingertip_targets = _STAPLER_WRAP_TIP_TARGETS
   cfg.commands["reorient_command"].tip_point_offsets = HAND2_TIP_PAD_POINTS
   cfg.rewards["fingertip_target"] = RewardTermCfg(
     func=mdp.fingertip_target_proximity,
-    weight=0.0,
+    weight=15.0,
     params={
       "command_name": "reorient_command",
-      "scale": 0.02,
-      "pad_offset": 0.005,  # depth of HAND2_TIP_PAD_POINTS inside the pad
-      "angle_power": 2.0,
-      "finger_reduce": "mean",
+      "scale": 0.04,
+      "pad_offset": _TIP_PAD_DEPTH,
+      "angle_power": 1.0,
+      "combine": "sum",
+      "finger_reduce": "sum",
+      "finger_weights": (1.0, 1.0, 0.3, 0.3, 0.3),  # thumb .. pinky
       "ori_bound": 0.2,
       "ori_margin": 0.3,
       "pos_bound": 0.01,
       "pos_margin": 0.02,
-      "gate_floor": 0.0,
+      "gate_floor": 1.0,
     },
+  )
+  # Each tip's offset from its target pad pose, in the object frame.
+  history_length = cfg.observations["policy"].terms["cube_pos_in_tag"].history_length
+  params = {"command_name": "reorient_command", "pad_offset": _TIP_PAD_DEPTH}
+  cfg.observations["policy"].terms["fingertip_target_err"] = ObservationTermCfg(
+    func=mdp.fingertip_target_error,
+    params=params,
+    noise=Unoise(n_min=-0.008, n_max=0.008),
+    history_length=history_length,
+  )
+  cfg.observations["critic"].terms["fingertip_target_err"] = ObservationTermCfg(
+    func=mdp.fingertip_target_error, params=params, history_length=history_length
   )
   # The cube sensors match the object geom named "cube"; on a multi-geom object
   # that is only the first part, so match the whole object body instead.
@@ -385,9 +427,10 @@ register_mjlab_task(
 # moved 1.5 cm along its z axis and 2 cm along its x axis (both in the palm
 # plane), flipped 180 deg about its x axis onto its other side and turned a
 # further +15 deg about its y axis (now the outward palm normal; palm gap
-# 4.5 mm). Tag frame.
-_STAPLER_CROSSWISE_POS = (-0.1305, 0.0093, -0.0052)
-_STAPLER_CROSSWISE_QUAT = (0.2721, 0.2721, 0.6527, 0.6527)
+# 4.5 mm). Tag frame. The goal is where the stapler settles in the wrap grasp
+# of _STAPLER_WRAP_TIP_REFS under gravity, 6 deg / 7 mm off that pose.
+_STAPLER_CROSSWISE_POS = (-0.12389, 0.01180, -0.00651)
+_STAPLER_CROSSWISE_QUAT = (0.23132, 0.27964, 0.63616, 0.68088)
 # Start pose for the fixed-goal task: upright, turned 180 deg about its z axis
 # (hinge end towards the other side), then by a random rotation of at most
 # 45 deg. The COM is the body origin, so the drop point is unchanged; at 45 deg
@@ -416,34 +459,35 @@ def _with_fixed_goal(cfg, pos, quat):
   return cfg
 
 
+def _with_fixed_wrist(cfg):
+  """Hold the wrist at its mount pose (the action is ignored)."""
+  cfg.actions["wrist_pose"].range_scale = 0.0
+  cfg.curriculum.pop("wrist_range", None)
+  return cfg
+
+
+def _stapler_fixed_goal_cfg(play: bool = False):
+  return _with_fixed_goal(
+    _with_fixed_wrist(
+      _with_wrist(
+        _with_random_start(
+          _with_stapler(
+            _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=play),
+            rot=_STAPLER_FIXED_GOAL_INIT_ROT,
+          ),
+          _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
+        )
+      )
+    ),
+    _STAPLER_CROSSWISE_POS,
+    _STAPLER_CROSSWISE_QUAT,
+  )
+
+
 register_mjlab_task(
   task_id="WujiHand2_ReorientStaplerFixedGoalWrist_50Hz",
-  env_cfg=_with_fixed_goal(
-    _with_wrist(
-      _with_random_start(
-        _with_stapler(
-          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE),
-          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
-        ),
-        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
-      )
-    ),
-    _STAPLER_CROSSWISE_POS,
-    _STAPLER_CROSSWISE_QUAT,
-  ),
-  play_env_cfg=_with_fixed_goal(
-    _with_wrist(
-      _with_random_start(
-        _with_stapler(
-          _reorient_pos_hand2_50hz_env_cfg(_STAPLER_GOAL_POS_RANGE, play=True),
-          rot=_STAPLER_FIXED_GOAL_INIT_ROT,
-        ),
-        _STAPLER_FIXED_GOAL_INIT_MAX_ANGLE,
-      )
-    ),
-    _STAPLER_CROSSWISE_POS,
-    _STAPLER_CROSSWISE_QUAT,
-  ),
+  env_cfg=_stapler_fixed_goal_cfg(),
+  play_env_cfg=_stapler_fixed_goal_cfg(play=True),
   rl_cfg=_wrist_rl_cfg(
     "wuji_reorient_hand2_stapler_fixed_goal_wrist",
     "ReorientStaplerFixedGoalWrist_Hand2_50Hz",

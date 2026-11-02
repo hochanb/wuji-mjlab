@@ -63,7 +63,8 @@ def _reward(tip, ori_err=0.0, pos_err=0.0, **kwargs):
     pos_error=lambda: torch.full((1,), pos_err),
   )
   env = SimpleNamespace(command_manager=SimpleNamespace(get_term=lambda _: command))
-  return float(fingertip_target_proximity(env, scale=0.02, pad_offset=0.0, **kwargs))
+  kwargs = {"scale": 0.02, "pad_offset": 0.0, **kwargs}
+  return float(fingertip_target_proximity(env, **kwargs))
 
 
 def test_proximity_favours_the_outer_side():
@@ -91,3 +92,13 @@ def test_gate_floor_keeps_a_fraction_far_from_the_goal():
   at_goal = _reward(tip, gate_floor=0.2)
   assert at_goal == pytest.approx(_reward(tip))
   assert _reward(tip, ori_err=2.5, gate_floor=0.2) == pytest.approx(0.2 * at_goal, rel=1e-3)
+
+
+def test_sum_combine_keeps_the_facing_term_far_away():
+  kw = {"combine": "sum", "angle_power": 1.0, "scale": 0.04, "pad_offset": 0.005}
+  assert _reward([0.0, 0.0, 0.005], **kw) == pytest.approx(1.0)  # pad on target
+  assert _reward([0.0, 0.0, -0.005], **kw) == pytest.approx(0.5)  # behind: closeness
+  # Far off, the product vanishes but the sum keeps the facing half.
+  assert _reward([0.0, 0.0, 1.0]) < 1e-9
+  assert _reward([0.0, 0.0, 1.0], **kw) == pytest.approx(0.5, abs=1e-6)
+  assert _reward([0.0, 0.0, 0.005], finger_weights=(0.3,), **kw) == pytest.approx(0.3)

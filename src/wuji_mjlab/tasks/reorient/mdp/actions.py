@@ -127,7 +127,7 @@ class WristPoseAction(ActionTerm):
     self._warmup_steps = warmup_steps(cfg.warmup_time_s, env.step_dt)
     # Fraction of the joint limits the action may command (set by a curriculum).
     # Observations and penalties stay normalised by the full limits.
-    self.range_scale = 1.0
+    self.range_scale = cfg.range_scale
 
   @property
   def action_dim(self) -> int:
@@ -198,6 +198,9 @@ class WristPoseActionCfg(ActionTermCfg):
   max_rate_normalized: float = 5.0
   ema_alpha: float = 0.3
   warmup_time_s: float = 0.4
+  # Initial fraction of the limits the action may command; 0 holds the wrist
+  # at its mount pose (with no wrist range curriculum to grow it).
+  range_scale: float = 1.0
 
   def build(self, env) -> WristPoseAction:
     return WristPoseAction(self, env)
