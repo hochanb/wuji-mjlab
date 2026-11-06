@@ -1,0 +1,18 @@
+# Initial state: the stapler 4 cm above its resting spot on the open hand
+# (upright, hinge end turned away), fingers open. Tip and joint parts unused.
+version: 1
+hand: wuji_hand2_right
+units: {length: m, angle: rad}
+frames: {object_pose: wrist, tip: object}
+grasps:
+  - id: rest_open
+    object_pose:
+      pos: [0.0042, 0.11856, -0.06022]
+      quat_wxyz: [0.54168, -0.45452, 0.45452, 0.54168]
+    tip:
+      points: [[0.0469, -0.0017, 0.0355], [0.04475, -0.00325, -0.02604], [0.01685, 0.01623, -0.0257], [-0.01296, 0.01637, -0.02014], [-0.0306, 0.01636, -0.02414]]
+      normals: [[0.0, -0.6, 0.8], [0.63092, 0.31045, -0.71103], [-0.00995, 0.99499, 0.0995], [-0.26867, 0.80602, 0.5274], [-0.1995, 0.76808, 0.60848]]
+      weights: [0, 0, 0, 0, 0]
+    joint:
+      q: [-0.2, 0.0, -0.2, -0.2, -0.2, 0.0, -0.2, -0.2, -0.2, 0.0, -0.2, -0.2, -0.2, 0.0, -0.2, -0.2, -0.2, 0.0, -0.2, -0.2]
+      weights: [0, 0, 0, 0, 0]

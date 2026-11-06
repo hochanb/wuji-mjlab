@@ -1,0 +1,11 @@
+# Step-1 example: one object, one stage, one initial and one goal grasp.
+version: 1
+hand: wuji_hand2_right
+encoding: {name: none, dim: 0}
+object_root: ../objects
+stages:
+  - name: s0
+    objects: [stapler]
+    init_grasps: {stapler: [grasps/init_rest]}
+    goal_grasps: {stapler: [grasps/goal_grasp]}
+    advance: {after_iterations: 1000}

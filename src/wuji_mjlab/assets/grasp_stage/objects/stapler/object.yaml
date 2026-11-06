@@ -1,0 +1,5 @@
+name: stapler
+kind: compound          # compound | mesh
+compound: stapler       # builder in compound_objects.COMPOUND_OBJECTS
+# mesh: {visual: visual.obj, collision: [col_000.obj, col_001.obj]}
+# encoding: encoding.npy  # needed when the training sets encoding.dim > 0

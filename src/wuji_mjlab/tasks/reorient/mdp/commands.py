@@ -251,10 +251,18 @@ class InHandReorientCommand(CommandTerm):
     ori_err = quat_error_magnitude(
       self.object.data.root_link_quat_w[selected], self.goal_quat_w[selected]
     )
-    within_threshold = ori_err < self.cfg.success_threshold
+    ori_ok = ori_err < self.cfg.success_threshold
+    pos_ok = torch.ones_like(ori_ok)
     if self.cfg.pos_success_threshold is not None:
-      pos_err = self.pos_error()[selected]
-      within_threshold = within_threshold & (pos_err < self.cfg.pos_success_threshold)
+      pos_ok = self.pos_error()[selected] < self.cfg.pos_success_threshold
+    pose_w = self._pose_weights()
+    if pose_w is not None:  # a pose part weighted 0 is not required
+      pos_ok = pos_ok | (pose_w[selected, 0] <= 0.0)
+      ori_ok = ori_ok | (pose_w[selected, 1] <= 0.0)
+    within_threshold = ori_ok & pos_ok
+    gate = self._success_gate()
+    if gate is not None:
+      within_threshold = within_threshold & gate[selected]
 
     approaching_mask = ~self.in_success_window[selected]
     hold_counter = self.hold_counter[selected]
@@ -416,11 +424,24 @@ class InHandReorientCommand(CommandTerm):
         self.goal_quat_w[env_idx : env_idx + 1],
       )[0].item()
     )
-    is_success = ori_error_rad < self.cfg.success_threshold
-    if self.cfg.pos_success_threshold is not None:
+    pose_w = self._pose_weights()
+    w_pos, w_rot = (1.0, 1.0) if pose_w is None else pose_w[env_idx].tolist()
+    is_success = ori_error_rad < self.cfg.success_threshold or w_rot <= 0.0
+    if self.cfg.pos_success_threshold is not None and w_pos > 0.0:
       pos_err = float(self.pos_error()[env_idx].item())
       is_success = is_success and pos_err < self.cfg.pos_success_threshold
+    gate = self._success_gate()
+    if gate is not None:
+      is_success = is_success and bool(gate[env_idx])
     return ori_error_rad, is_success
+
+  def _success_gate(self) -> torch.Tensor | None:
+    """Extra [N] success condition on top of the pose; None for pose only."""
+    return None
+
+  def _pose_weights(self) -> torch.Tensor | None:
+    """[N, 2] (w_pos, w_rot); a part weighted 0 is not required. None: both."""
+    return None
 
   @property
   def within_threshold(self) -> torch.Tensor:

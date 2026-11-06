@@ -41,6 +41,7 @@ pyglet = ">=1.5,<2"
 [feature.train.tasks]
 train = { cmd = "python scripts/train/train_rsl_rl.py", description = "Train a task with rsl_rl (append --task and overrides)" }
 play = { cmd = "python scripts/play/play_rsl_rl.py", description = "Play/infer from rsl_rl checkpoint" }
+train-stages = { cmd = "python scripts/train/train_stages.py", description = "Train a grasp-stage task through the stages of a training file (append --training and overrides)" }
 list-envs = { cmd = "python scripts/list_envs.py", description = "List Wuji tasks (pass --all to include upstream examples)" }
 export-onnx = { cmd = "python -m wuji_mjlab.rl.onnx_export", description = "Export an rsl_rl checkpoint to <run dir>/policy.onnx (append <model_N.pt>)" }
 

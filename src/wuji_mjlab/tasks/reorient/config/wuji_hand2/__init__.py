@@ -450,3 +450,17 @@ register_mjlab_task(
   ),
   runner_cls=WujiOnPolicyRunner,
 )
+
+
+# Grasp-stage task: object, initial and goal grasps from a stage of a training
+# file (scripts/train/train_stages.py builds each stage's env); registered with
+# stage 0 of the bundled example.
+from .grasp_stage import example_stage_env_cfg  # noqa: E402
+
+register_mjlab_task(
+  task_id="WujiHand2_GraspStage_50Hz",
+  env_cfg=example_stage_env_cfg(),
+  play_env_cfg=example_stage_env_cfg(play=True),
+  rl_cfg=_wrist_rl_cfg("wuji_grasp_stage_hand2", "GraspStage_Hand2_50Hz"),
+  runner_cls=WujiOnPolicyRunner,
+)
