@@ -159,7 +159,12 @@ def stapler_fingertip_targets(
   return (thumb, *fingers)
 
 
-COMPOUND_OBJECTS = {"stapler": stapler_parts}
+def cube_parts() -> list[Part]:
+  """The 54 mm / 120 g reorient cube as a single box."""
+  return [Part("box", (0.027, 0.027, 0.027), (0.0, 0.0, 0.0), (0.85, 0.55, 0.2, 1.0))]
+
+
+COMPOUND_OBJECTS = {"stapler": stapler_parts, "cube": cube_parts}
 
 
 def compound_spec(name: str) -> mujoco.MjSpec:

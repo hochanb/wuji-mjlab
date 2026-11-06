@@ -1,0 +1,12 @@
+# cube 6D pose task from make_pose_grasps.py (no hand shape): random
+# initial poses at the spawn point, random goal poses in the goal box.
+version: 1
+hand: wuji_hand2_right
+encoding: {name: none, dim: 0}
+object_root: ../objects
+stages:
+  - name: pose
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_6d_10k/init]}
+    goal_grasps: {cube: [grasps/cube_6d_10k/goal]}
+    advance: {after_iterations: 5000}

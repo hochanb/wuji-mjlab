@@ -467,3 +467,40 @@ def test_gather_rows_sends_the_drawn_rows():
   drawn, (sa, sb) = sample_rows((a, b), 5, "cpu")
   torch.testing.assert_close(sa, a[drawn])
   torch.testing.assert_close(sb, b[drawn].view(5, 4))
+
+
+def _cube_training(name: str):
+  """A cube_6d training; its npz sets are not in git (make_pose_grasps.py,
+  see examples/cube_6d/README.md), so skip when they are not generated."""
+  root = _example_root() / "examples" / "cube_6d"
+  sets = name.removesuffix("_curriculum") + "*"
+  if not any((root / "objects" / "cube" / "grasps").glob(f"{sets}/*/grasps.npz")):
+    pytest.skip(f"{name}: grasp sets not generated")
+  return load_training(root / "trainings" / f"{name}.yaml")
+
+
+@pytest.mark.parametrize(
+  ("name", "count"), [("cube_6d_1k", 1000), ("cube_6d_10k", 10000)]
+)
+def test_cube_pose_trainings_load(name, count):
+  training = _cube_training(name)
+  (stage,) = training.stages
+  init, goal = stage.init_grasps["cube"], stage.goal_grasps["cube"]
+  assert len(init) == len(goal) == count
+  assert (goal.pose_weights == 1).all()
+  assert (goal.tip_weights == 0).all() and (goal.joint_weights == 0).all()
+
+
+def test_cube_pose_curriculum():
+  """Five stages, 1000 iterations each; init and goal orientations lie within
+  36k deg of one reference, so the rotation asked for is at most 72k deg."""
+  training = _cube_training("cube_6d_10k_curriculum")
+  assert [s.name for s in training.stages] == [f"stage{k}" for k in range(1, 6)]
+  for k, stage in enumerate(training.stages, start=1):
+    init, goal = stage.init_grasps["cube"], stage.goal_grasps["cube"]
+    assert stage.advance_after_iterations == 1000
+    assert len(init) == len(goal) == 10000
+    assert (goal.tip_weights == 0).all() and (goal.joint_weights == 0).all()
+    dot = torch.from_numpy(init.object_quat * goal.object_quat).double().sum(-1)
+    angle = torch.rad2deg(2 * torch.acos(dot.abs().clamp(max=1.0)))
+    assert angle.max() <= 72 * k + 1e-3

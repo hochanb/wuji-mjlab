@@ -1,0 +1,2 @@
+# Generated with src/tools/make_pose_grasps.py (see README.md); not in git.
+*.npz
