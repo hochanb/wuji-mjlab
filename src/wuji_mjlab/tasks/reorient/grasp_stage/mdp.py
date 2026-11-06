@@ -53,6 +53,25 @@ def _mocap_to_palm(env, robot: Entity, palm_pattern: str):
   return cache
 
 
+def _cached(env, key, build):
+  """Per-env memo for values derived from term parameters (built once)."""
+  cache = env.__dict__.setdefault("_grasp_stage_cache", {})
+  if key not in cache:
+    cache[key] = build()
+  return cache[key]
+
+
+def _param_tensor(env, data) -> torch.Tensor:
+  """``data`` (a term parameter, fixed for the env's life) as a tensor, built
+  on first use; keyed by identity, keeping ``data`` alive with it."""
+  entry = _cached(
+    env,
+    ("tensor", id(data)),
+    lambda: (data, torch.tensor(data, dtype=torch.float32, device=env.device)),
+  )
+  return entry[1]
+
+
 def reset_to_init_grasp(
   env,
   env_ids,
@@ -76,12 +95,16 @@ def reset_to_init_grasp(
   robot: Entity = env.scene[robot_cfg.name]
   obj: Entity = env.scene[object_cfg.name]
   dev, n = env.device, env_ids.numel()
-  pos_set = torch.tensor(object_pos, dtype=torch.float32, device=dev)
-  quat_set = torch.tensor(object_quat, dtype=torch.float32, device=dev)
-  q_set = torch.tensor(joint_q, dtype=torch.float32, device=dev)
+  pos_set = _param_tensor(env, object_pos)
+  quat_set = _param_tensor(env, object_quat)
+  q_set = _param_tensor(env, joint_q)
   idx = torch.randint(0, pos_set.shape[0], (n,), device=dev)
 
-  joint_ids, _ = robot.find_joints(finger_joint_pattern)
+  joint_ids = _cached(
+    env,
+    ("joints", finger_joint_pattern),
+    lambda: robot.find_joints(finger_joint_pattern)[0],
+  )
   robot.write_joint_state_to_sim(
     q_set[idx], torch.zeros_like(q_set[idx]), joint_ids=joint_ids, env_ids=env_ids
   )
@@ -185,8 +208,7 @@ def grasp_joint_goal(
 
 def object_encoding(env, encoding: tuple[float, ...]) -> torch.Tensor:
   """[N, D] the object's preprocessed shape encoding (one object per stage)."""
-  e = torch.tensor(encoding, dtype=torch.float32, device=env.device)
-  return e.expand(env.num_envs, -1)
+  return _param_tensor(env, encoding).expand(env.num_envs, -1)
 
 
 # -- rewards -----------------------------------------------------------------

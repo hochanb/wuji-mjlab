@@ -13,7 +13,8 @@ free-body spin-up.
 
 from __future__ import annotations
 
-from dataclasses import fields
+import copy
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 
 from mjlab.managers.event_manager import EventTermCfg
@@ -48,16 +49,9 @@ _JOINT_REWARD_WEIGHT = 5.0
 
 
 def _grasp_fields(grasps):
-  return {
-    "object_pos": tuple(g.object_pos for g in grasps),
-    "object_quat": tuple(g.object_quat for g in grasps),
-    "pose_weights": tuple(g.pose_weights for g in grasps),
-    "tip_points": tuple(g.tip_points for g in grasps),
-    "tip_normals": tuple(g.tip_normals for g in grasps),
-    "tip_weights": tuple(g.tip_weights for g in grasps),
-    "joint_q": tuple(g.joint_q for g in grasps),
-    "joint_weights": tuple(g.joint_weights for g in grasps),
-  }
+  """GraspSet arrays as nested lists for the term configs (tensors are built
+  once, when the command / reset event first runs)."""
+  return {a: getattr(grasps, a).tolist() for a in grasps.ARRAYS}
 
 
 def build_stage_env_cfg(training: TrainingSpec, stage_index: int, play: bool = False):
@@ -173,6 +167,41 @@ def build_stage_env_cfg(training: TrainingSpec, stage_index: int, play: bool = F
     func=gmdp.object_speed_limit
   )
   return cfg
+
+
+_GRASP_DATA_FIELDS = (
+  "fingertip_targets",
+  "goal_object_pos",
+  "goal_object_quat",
+  "goal_pose_weights",
+  "goal_tip_points",
+  "goal_tip_normals",
+  "goal_tip_weights",
+  "goal_joint_q",
+  "goal_joint_weights",
+)
+
+
+def env_cfg_for_dump(env_cfg) -> dict:
+  """``asdict(env_cfg)`` with the grasp arrays replaced by their counts (the
+  grasp files themselves are copied next to the params). The arrays are
+  swapped out before ``asdict`` so they are not deep-copied."""
+  command = env_cfg.commands["reorient_command"]
+  event = env_cfg.events["reset_object_pose"]
+  note = lambda v: f"<{len(v)} entries, see grasp files>"  # noqa: E731
+  light = copy.copy(env_cfg)
+  light.commands = {
+    **env_cfg.commands,
+    "reorient_command": replace(
+      command, **{k: note(getattr(command, k)) for k in _GRASP_DATA_FIELDS}
+    ),
+  }
+  params = {
+    k: note(v) if k in ("object_pos", "object_quat", "joint_q") else v
+    for k, v in event.params.items()
+  }
+  light.events = {**env_cfg.events, "reset_object_pose": replace(event, params=params)}
+  return asdict(light)
 
 
 def example_stage_env_cfg(play: bool = False):

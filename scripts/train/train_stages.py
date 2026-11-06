@@ -32,6 +32,7 @@ from wuji_mjlab.rl.runner import WujiOnPolicyRunner
 from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
   EXAMPLE_TRAINING,
   build_stage_env_cfg,
+  env_cfg_for_dump,
 )
 from wuji_mjlab.tasks.reorient.grasp_stage.mdp import observation_layout
 from wuji_mjlab.tasks.reorient.grasp_stage.schema import load_training
@@ -65,6 +66,15 @@ def main() -> None:
   log_dir = Path("logs") / "rsl_rl" / agent_cfg.experiment_name / name
   (log_dir / "params").mkdir(parents=True, exist_ok=True)
   shutil.copy(training.path, log_dir / "params" / "training.yaml")
+  # The object files and grasp sets every stage uses, as read.
+  for stage in training.stages:
+    for obj in stage.objects:
+      dst = log_dir / "params" / "objects" / obj.name
+      dst.mkdir(parents=True, exist_ok=True)
+      shutil.copy(obj.folder / "object.yaml", dst / "object.yaml")
+      for folder in stage.grasp_set_folders.get(obj.name, ()):
+        rel = folder.relative_to(obj.folder.resolve())
+        shutil.copytree(folder, dst / rel, dirs_exist_ok=True)
   dump_yaml(log_dir / "params" / "agent.yaml", asdict(agent_cfg))
   print(
     f"[INFO] {len(training.stages)} stage(s), {training.total_iterations} "
@@ -76,7 +86,9 @@ def main() -> None:
     env_cfg = build_stage_env_cfg(training, i)
     apply_overrides({"env": env_cfg}, env_overrides)
     env_cfg.seed = agent_cfg.seed + i
-    dump_yaml(log_dir / "params" / f"env_stage{i}_{stage.name}.yaml", asdict(env_cfg))
+    dump_yaml(
+      log_dir / "params" / f"env_stage{i}_{stage.name}.yaml", env_cfg_for_dump(env_cfg)
+    )
     print(
       f"[INFO] stage {i} '{stage.name}': {stage.advance_after_iterations} iterations"
     )

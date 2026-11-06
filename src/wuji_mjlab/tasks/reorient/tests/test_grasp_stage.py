@@ -30,6 +30,16 @@ def assets(tmp_path):
   return root
 
 
+def _only(grasps):
+  """The single grasp of a set, as a namespace of rows."""
+  from types import SimpleNamespace
+
+  assert len(grasps) == 1
+  return SimpleNamespace(
+    id=grasps.ids[0], **{a: getattr(grasps, a)[0].tolist() for a in grasps.ARRAYS}
+  )
+
+
 def _edit(path, fn):
   data = yaml.safe_load(path.read_text())
   fn(data)
@@ -41,11 +51,11 @@ def test_example_training_loads():
   (stage,) = training.stages
   assert [o.name for o in stage.objects] == ["stapler"]
   assert len(stage.init_grasps["stapler"]) == 1
-  (goal,) = stage.goal_grasps["stapler"]
-  assert goal.tip_weights == (1.0,) * 5 and goal.joint_weights == (0.0,) * 5
+  goal = _only(stage.goal_grasps["stapler"])
+  assert goal.tip_weights == [1.0] * 5 and goal.joint_weights == [0.0] * 5
   # Pose weights default to 1 when a grasp leaves them out (the init grasp).
-  assert stage.init_grasps["stapler"][0].pose_weights == (1.0, 1.0)
-  assert goal.pose_weights == (1.0, 1.0)
+  assert _only(stage.init_grasps["stapler"]).pose_weights == [1.0, 1.0]
+  assert goal.pose_weights == [1.0, 1.0]
   assert training.total_iterations == 1000
 
 
@@ -93,7 +103,7 @@ def test_two_stage_training_merges_grasp_sets(assets):
   _edit(training, two_stages)
   spec = load_training(training)
   assert [s.name for s in spec.stages] == ["s0", "s1"]
-  assert [g.id for g in spec.stages[1].goal_grasps["stapler"]] == ["side_grasp", "b"]
+  assert spec.stages[1].goal_grasps["stapler"].ids == ("side_grasp", "b")
   assert spec.total_iterations == 2000
 
 
@@ -125,8 +135,8 @@ def test_stage_env_resets_into_the_init_grasp_with_the_goal_grasp(stage_env):
   from mjlab.utils.lab_api.math import quat_error_magnitude
 
   training = load_training(_example_root() / "trainings" / "stapler_single.yaml")
-  (init,) = training.stages[0].init_grasps["stapler"]
-  (goal,) = training.stages[0].goal_grasps["stapler"]
+  init = _only(training.stages[0].init_grasps["stapler"])
+  goal = _only(training.stages[0].goal_grasps["stapler"])
   stage_env.reset()
   stage_env.sim.forward()
   cmd = stage_env.command_manager.get_term("reorient_command")
@@ -284,3 +294,130 @@ def test_observations_are_env_then_condition_and_masks_are_exact():
     torch.testing.assert_close(obs[:, lo : lo + 2], torch.zeros(2, 2))
   finally:
     env.close()
+
+
+def test_npz_grasp_sets_round_trip_and_validate(assets):
+  import numpy as np
+  from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
+    load_grasp_set,
+    save_grasp_set_npz,
+  )
+
+  training = assets / "trainings" / "stapler_single.yaml"
+  folder = assets / "objects" / "stapler" / "grasps" / "goal_grasp"
+  yml = load_grasp_set(folder, "wuji_hand2_right")
+  save_grasp_set_npz(folder, yml, "wuji_hand2_right")
+  with pytest.raises(GraspStageError, match="both grasps.yaml and grasps.npz"):
+    load_training(training)
+  (folder / "grasps.yaml").unlink()
+  npz = load_training(training).stages[0].goal_grasps["stapler"]
+  assert npz.ids == yml.ids
+  for a in yml.ARRAYS:
+    np.testing.assert_allclose(getattr(npz, a), getattr(yml, a), atol=1e-6)
+  bad = npz.tip_weights.copy()
+  bad[0, 2] = 1.5
+  save_grasp_set_npz(folder, type(npz)(npz.ids, *(
+    bad if a == "tip_weights" else getattr(npz, a) for a in npz.ARRAYS
+  )), "wuji_hand2_right")  # fmt: skip
+  with pytest.raises(GraspStageError, match=r"tip_weights of grasp 'side_grasp'"):
+    load_training(training)
+
+
+def test_ten_thousand_grasps_load_fast(tmp_path):
+  import time
+
+  import numpy as np
+  from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
+    GraspSet,
+    load_grasp_set,
+    save_grasp_set_npz,
+  )
+
+  g, rng = 10_000, np.random.default_rng(0)
+  unit = lambda x: x / np.linalg.norm(x, axis=-1, keepdims=True)  # noqa: E731
+  grasps = GraspSet(
+    tuple(f"g{i}" for i in range(g)),
+    rng.normal(size=(g, 3)),
+    unit(rng.normal(size=(g, 4))),
+    np.ones((g, 2)),
+    rng.normal(size=(g, 5, 3)),
+    unit(rng.normal(size=(g, 5, 3))),
+    np.ones((g, 5)),
+    rng.uniform(-1, 1, size=(g, 20)),
+    np.ones((g, 5)),
+  )
+  save_grasp_set_npz(tmp_path, grasps, "wuji_hand2_right")
+  start = time.perf_counter()
+  loaded = load_grasp_set(tmp_path, "wuji_hand2_right")
+  assert len(loaded) == g
+  assert time.perf_counter() - start < 2.0
+
+
+def test_reset_event_builds_its_tensors_once(stage_env):
+  stage_env.reset()
+  cache = stage_env._grasp_stage_cache
+  tensors = {k: v[1] for k, v in cache.items() if k[0] == "tensor"}
+  assert len(tensors) == 3  # object pos, quat and joint goals of the init set
+  stage_env.reset()
+  for k, t in tensors.items():
+    assert stage_env._grasp_stage_cache[k][1] is t
+
+
+def test_env_cfg_dump_summarises_grasp_data():
+  from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
+    env_cfg_for_dump,
+    example_stage_env_cfg,
+  )
+
+  data = env_cfg_for_dump(example_stage_env_cfg())
+  command = data["commands"]["reorient_command"]
+  assert command["goal_tip_points"] == "<1 entries, see grasp files>"
+  params = data["events"]["reset_object_pose"]["params"]
+  assert params["joint_q"] == "<1 entries, see grasp files>"
+
+
+def _set_q(path, q, weights=None):
+  def fn(d):
+    d["grasps"][0]["joint"]["q"] = q
+    if weights is not None:
+      d["grasps"][0]["joint"]["weights"] = weights
+
+  _edit(path, fn)
+
+
+def test_joint_angles_are_checked_against_the_hand_limits(assets):
+  from wuji_mjlab.tasks.reorient.grasp_stage.schema import hand_joint_limits
+
+  training = assets / "trainings" / "stapler_single.yaml"
+  grasps = assets / "objects" / "stapler" / "grasps"
+  _, hard, soft = hand_joint_limits("wuji_hand2_right")
+  # Initial grasp beyond a joint's range: the hand cannot be put there.
+  q = [0.0] * 20
+  q[1] = float(hard[1, 1]) + 0.01  # right_finger1_joint2
+  _set_q(grasps / "init_rest" / "grasps.yaml", q)
+  with pytest.raises(
+    GraspStageError, match=r"right_finger1_joint2 .* outside its range"
+  ):
+    load_training(training)
+  _set_q(grasps / "init_rest" / "grasps.yaml", [0.0] * 20)
+  # Goal between the soft limit and the range: fine while the finger's joint
+  # goal is off, rejected once it is weighted.
+  q = [0.0] * 20
+  q[5] = float(soft[5, 1] + hard[5, 1]) / 2  # right_finger2_joint2
+  _set_q(grasps / "goal_grasp" / "grasps.yaml", q, [0, 0, 0, 0, 0])
+  load_training(training)
+  _set_q(grasps / "goal_grasp" / "grasps.yaml", q, [0, 1, 0, 0, 0])
+  with pytest.raises(GraspStageError, match=r"right_finger2_joint2 .* soft limits"):
+    load_training(training)
+
+
+def test_joint_limits_match_the_env(stage_env):
+  import numpy as np
+  from wuji_mjlab.tasks.reorient.grasp_stage.schema import hand_joint_limits
+
+  names, _, soft = hand_joint_limits("wuji_hand2_right")
+  robot = stage_env.scene["robot"]
+  ids, found = robot.find_joints(list(names), preserve_order=True)
+  assert list(found) == list(names)
+  env_soft = robot.data.soft_joint_pos_limits[0, ids].cpu().numpy()
+  np.testing.assert_allclose(env_soft, soft, atol=1e-5)
