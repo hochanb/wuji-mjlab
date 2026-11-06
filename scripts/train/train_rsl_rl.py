@@ -194,7 +194,7 @@ def _launch_training(task_id: str, cfg: TrainConfig) -> None:
       workers_per_host=num_gpus,
       backend=None,
       copy_env_vars=torchrunx.DEFAULT_ENV_VARS_FOR_COPY
-      + ("MUJOCO*", "WUJI_ACTION_DIAGNOSTICS"),
+      + ("MUJOCO*", "WUJI_ACTION_DIAGNOSTICS", "WUJI_SIM_CHUNK_SIZE"),
     ).run(_run_train, task_id, cfg, log_dir)
 
 
