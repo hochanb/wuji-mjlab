@@ -19,7 +19,6 @@ Grasp scheme ``xi = {T_wrist^object, q_tip, q_joint, w_tip, w_joint}``:
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
@@ -93,7 +92,7 @@ def _check_joint_limits(grasps: GraspSet, hand: str, role: str, where: str) -> N
     g, j = np.argwhere(out)[0]
     kind = "range" if role == "init" else "soft limits"
     raise GraspStageError(
-      f"{where}: grasp {grasps.ids[g]!r} {names[j]} = {q[g, j]:.4f} rad is outside "
+      f"{where}: grasp id {grasps.ids[g]} {names[j]} = {q[g, j]:.4f} rad is outside "
       f"its {kind} [{lo[j]:.4f}, {hi[j]:.4f}]"
     )
 
@@ -102,7 +101,7 @@ def _check_joint_limits(grasps: GraspSet, hand: str, role: str, where: str) -> N
 class GraspSet:
   """G grasps as arrays (float32), one row per grasp."""
 
-  ids: tuple[str, ...]
+  ids: np.ndarray  # (G,) int64, unique within a set (default: row index)
   object_pos: np.ndarray  # (G, 3) hand base frame [m]
   object_quat: np.ndarray  # (G, 4) wxyz, unit
   pose_weights: np.ndarray  # (G, 2) (w_pos, w_rot)
@@ -129,7 +128,7 @@ class GraspSet:
   @staticmethod
   def concat(sets: list[GraspSet]) -> GraspSet:
     return GraspSet(
-      tuple(i for s in sets for i in s.ids),
+      np.concatenate([s.ids for s in sets]),
       *(np.concatenate([getattr(s, a) for s in sets]) for a in GraspSet.ARRAYS),
     )
 
@@ -153,7 +152,8 @@ class StageSpec:
   goal_grasps: dict[str, GraspSet]
   advance_after_iterations: int
   # Grasp-set folders behind init_grasps / goal_grasps, per object.
-  grasp_set_folders: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+  init_set_folders: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+  goal_set_folders: dict[str, tuple[Path, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -192,13 +192,18 @@ def _require(data: dict, key: str, where: str):
 # -- grasp sets ----------------------------------------------------------------
 def _validate_arrays(arrays: dict, ids, spec: HandSpec, where: str) -> GraspSet:
   """Shape / value checks on all grasps at once; errors name the first bad one."""
-  ids = tuple(str(i) for i in ids)
-  g, f = len(ids), spec.fingers
+  g, f = len(arrays["object_pos"]), spec.fingers
+  if ids is None:
+    ids = np.arange(g, dtype=np.int64)
+  ids = np.asarray(ids)
+  if ids.shape != (g,) or not np.issubdtype(ids.dtype, np.integer):
+    raise GraspStageError(f"{where}: ids must be {g} integers")
+  ids = ids.astype(np.int64)
   if g == 0:
     raise GraspStageError(f"{where}: no grasps")
-  if len(set(ids)) != g:
-    dup = sorted(i for i, c in Counter(ids).items() if c > 1)
-    raise GraspStageError(f"{where}: duplicate id {dup[0]!r}")
+  uniq, counts = np.unique(ids, return_counts=True)
+  if (counts > 1).any():
+    raise GraspStageError(f"{where}: duplicate id {int(uniq[counts > 1][0])}")
   shapes = {
     "object_pos": (g, 3),
     "object_quat": (g, 4),
@@ -224,14 +229,14 @@ def _validate_arrays(arrays: dict, ids, spec: HandSpec, where: str) -> GraspSet:
     bad = ~np.isfinite(arr).reshape(g, -1).all(-1)
     if bad.any():
       raise GraspStageError(
-        f"{where}: {name} of grasp {ids[bad.argmax()]!r} not finite"
+        f"{where}: {name} of grasp id {ids[bad.argmax()]} not finite"
       )
     out[name] = arr
 
   def first_bad(mask, name, what):
     if mask.any():
       k = int(np.argmax(mask))
-      raise GraspStageError(f"{where}: {name} of grasp {ids[k]!r} {what}")
+      raise GraspStageError(f"{where}: {name} of grasp id {ids[k]} {what}")
 
   for name in ("object_quat", "tip_normals"):
     norm = np.linalg.norm(out[name], axis=-1)
@@ -266,7 +271,10 @@ def _load_yaml_set(path: Path, hand: str) -> GraspSet:
   ids = []
   for k, g in enumerate(raw):
     w = f"{where} grasps[{k}]"
-    ids.append(_require(g, "id", w))
+    gid = g.get("id", k)
+    if not isinstance(gid, int) or isinstance(gid, bool):
+      raise GraspStageError(f"{w}: id must be an integer, got {gid!r}")
+    ids.append(gid)
     pose, tip, joint = (_require(g, key, w) for key in ("object_pose", "tip", "joint"))
     pw = pose.get("weights", {"pos": 1.0, "rot": 1.0})
     if not isinstance(pw, dict) or set(pw) != {"pos", "rot"}:
@@ -297,22 +305,46 @@ def _load_npz_set(path: Path, hand: str) -> GraspSet:
     return str(data[key]) if key in data else None
 
   _check_header(get, hand, where)
-  if "ids" not in data:
-    raise GraspStageError(f"{where}: missing 'ids'")
+  if "object_pos" not in data:
+    raise GraspStageError(f"{where}: missing 'object_pos'")
   arrays = dict(data)
-  arrays.setdefault("pose_weights", np.ones((len(data["ids"]), 2), np.float32))
-  return _validate_arrays(arrays, data["ids"].tolist(), HANDS[hand], where)
+  arrays.setdefault("pose_weights", np.ones((len(data["object_pos"]), 2), np.float32))
+  return _validate_arrays(arrays, data.get("ids"), HANDS[hand], where)
 
 
-def load_grasp_set(folder: Path, hand: str) -> GraspSet:
+def grasp_set_file(folder: str | Path) -> Path:
+  """The ``grasps.npz`` or ``grasps.yaml`` of a grasp-set folder."""
+  folder = Path(folder)
   yml, npz = folder / "grasps.yaml", folder / "grasps.npz"
   if yml.is_file() and npz.is_file():
     raise GraspStageError(f"{folder}: has both grasps.yaml and grasps.npz")
   if npz.is_file():
-    return _load_npz_set(npz, hand)
+    return npz
   if yml.is_file():
-    return _load_yaml_set(yml, hand)
+    return yml
   raise GraspStageError(f"{folder}: grasp set not found (grasps.yaml or grasps.npz)")
+
+
+# Grasp sets read in this process, keyed by file, its mtime / size and hand:
+# load_training validates them and the env terms reuse the arrays.
+_SET_CACHE: dict[tuple, GraspSet] = {}
+
+
+def load_grasp_set(folder: str | Path, hand: str) -> GraspSet:
+  path = grasp_set_file(folder).resolve()
+  stat = path.stat()
+  key = (path, stat.st_mtime_ns, stat.st_size, hand)
+  if key not in _SET_CACHE:
+    load = _load_npz_set if path.suffix == ".npz" else _load_yaml_set
+    _SET_CACHE[key] = load(path, hand)
+  return _SET_CACHE[key]
+
+
+def load_grasp_sets(folders, hand: str) -> GraspSet:
+  """Several grasp-set folders concatenated (a grasp is identified by its
+  folder and id)."""
+  sets = [load_grasp_set(f, hand) for f in folders]
+  return sets[0] if len(sets) == 1 else GraspSet.concat(sets)
 
 
 def save_grasp_set_npz(folder: str | Path, grasps: GraspSet, hand: str) -> Path:
@@ -328,7 +360,7 @@ def save_grasp_set_npz(folder: str | Path, grasps: GraspSet, hand: str) -> Path:
     unit_angle=np.str_(_UNITS["angle"]),
     frame_object_pose=np.str_(_FRAMES["object_pose"]),
     frame_tip=np.str_(_FRAMES["tip"]),
-    ids=np.array(grasps.ids),
+    ids=np.asarray(grasps.ids, dtype=np.int64),
     **{a: np.asarray(getattr(grasps, a), np.float32) for a in GraspSet.ARRAYS},
   )
   return path
@@ -380,8 +412,8 @@ def load_object(folder: Path, encoding_dim: int) -> ObjectSpec:
 
 
 def load_training(path: str | Path) -> TrainingSpec:
-  """Load and validate a training file and everything it references. A grasp
-  set used by several stages is read once."""
+  """Load and validate a training file and everything it references. Grasp
+  sets are read once per process (``load_grasp_set``)."""
   path = Path(path).resolve()
   data = _read_yaml(path)
   where = str(path)
@@ -400,7 +432,6 @@ def load_training(path: str | Path) -> TrainingSpec:
     raise GraspStageError(f"{where}: 'stages' must be a non-empty list")
 
   objects: dict[str, ObjectSpec] = {}
-  sets_cache: dict[Path, GraspSet] = {}
   stages, names = [], set()
   for k, s in enumerate(raw_stages):
     w = f"{where} stages[{k}]"
@@ -419,7 +450,7 @@ def load_training(path: str | Path) -> TrainingSpec:
     stage_objects = tuple(objects[n] for n in obj_names)
     if len({o.kind for o in stage_objects}) > 1:
       raise GraspStageError(f"{w}: mesh and compound objects cannot share a stage")
-    sets, folders = {}, {n: [] for n in obj_names}
+    sets, folders = {}, {}
     for key in ("init_grasps", "goal_grasps"):
       per_object = _require(s, key, w)
       if set(per_object) != set(obj_names):
@@ -427,20 +458,13 @@ def load_training(path: str | Path) -> TrainingSpec:
           f"{w}.{key}: needs exactly the stage objects {sorted(obj_names)}, "
           f"got {sorted(per_object)}"
         )
-      merged = {}
+      merged, folders[key] = {}, {}
       for n, rels in per_object.items():
         if not rels:
           raise GraspStageError(f"{w}.{key}.{n}: list at least one grasp set")
-        parts = []
-        for rel in rels:
-          folder = (objects[n].folder / rel).resolve()
-          if folder not in sets_cache:
-            sets_cache[folder] = load_grasp_set(folder, hand)
-          parts.append(sets_cache[folder])
-          folders[n].append(folder)
-        merged[n] = parts[0] if len(parts) == 1 else GraspSet.concat(parts)
-        if len(set(merged[n].ids)) != len(merged[n]):
-          raise GraspStageError(f"{w}.{key}.{n}: grasp ids repeat across merged sets")
+        paths = tuple((objects[n].folder / rel).resolve() for rel in rels)
+        merged[n] = load_grasp_sets(paths, hand)
+        folders[key][n] = paths
         role = "init" if key == "init_grasps" else "goal"
         _check_joint_limits(merged[n], hand, role, f"{w}.{key}.{n}")
       sets[key] = merged
@@ -455,7 +479,8 @@ def load_training(path: str | Path) -> TrainingSpec:
         sets["init_grasps"],
         sets["goal_grasps"],
         iters,
-        {n: tuple(dict.fromkeys(f)) for n, f in folders.items()},
+        folders["init_grasps"],
+        folders["goal_grasps"],
       )
     )
   return TrainingSpec(path, hand, enc_name, enc_dim, tuple(stages))

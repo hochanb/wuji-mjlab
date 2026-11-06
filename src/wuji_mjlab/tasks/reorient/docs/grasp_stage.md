@@ -18,9 +18,11 @@ Every stage is validated before the first env is built; a bad file stops the
 run with the file path, the field and, for grasp arrays, the first bad grasp
 id. Each stage gets a fresh env; the policy, optimiser and iteration count
 carry over and a checkpoint `model_<it>_stage<i>_<name>.pt` is written at each
-stage switch. The run folder's `params/` keeps `training.yaml`, the objects
-and grasp sets used (copied as read), `env_stage<i>_<name>.yaml` (grasp arrays
-replaced by counts) and `obs_layout_stage<i>_<name>.yaml`.
+stage switch. The run folder's `params/` keeps `training.yaml`, the object
+files, `grasp_sets.yaml` (every grasp set used: file path, SHA-256, size and
+grasp count; the sets themselves are not copied), `env_stage<i>_<name>.yaml`
+(grasp sets appear as folder paths) and `obs_layout_stage<i>_<name>.yaml`.
+Do not change or move a grasp set a run used: the checksum identifies it.
 
 The bundled example is `src/wuji_mjlab/assets/grasp_stage/`.
 
@@ -61,8 +63,9 @@ stages:
   (success-based advancing comes later). The run's total iterations is their
   sum.
 - `init_grasps` and `goal_grasps` must list every stage object, each with at
-  least one grasp set. Several sets are concatenated; grasp ids must stay
-  unique across the merged sets. A set used by several stages is read once.
+  least one grasp set. Several sets are concatenated; a grasp is identified
+  by its set folder and id, so ids may repeat across sets. A set is read once
+  per process and handed to the env as arrays (never Python lists).
 - Every stage of a training must give the same observation layout: same
   hand, same `encoding.dim`. Grasp scheme parts (tip / joint / pose) are always
   in the observations and switched by their weights, so stages may differ in
@@ -93,9 +96,10 @@ compound: stapler             # builder in compound_objects.COMPOUND_OBJECTS
 
 ## Grasp set
 
-A folder holding exactly one of `grasps.yaml` (small, hand-edited) or
-`grasps.npz` (large, generated). Prefer npz beyond ~1000 grasps: 10k grasps
-load in ~0.02 s from npz and ~30 s from YAML.
+A folder holding exactly one of `grasps.yaml` (hand-edited) or `grasps.npz`
+(generated). Both are handled the same way and sized for millions of grasps:
+3 million grasps are ~850 MB as npz and load, validate and reach the env in a
+few seconds; YAML parses far slower (~6 s per 10k grasps), so generate npz.
 
 ### Conventions
 
@@ -157,7 +161,7 @@ hand: wuji_hand2_right
 units: {length: m, angle: rad}
 frames: {object_pose: wrist, tip: object}
 grasps:
-  - id: side_grasp                      # unique within the merged sets
+  - id: 0                               # optional integer, unique in the set
     object_pose:
       pos: [0.0088, 0.03066, -0.06066]
       quat_wxyz: [0.91398, 0.0018, 0.40309, 0.04649]
@@ -179,7 +183,7 @@ Write it with the helper rather than by hand:
 from wuji_mjlab.tasks.reorient.grasp_stage.schema import GraspSet, save_grasp_set_npz
 
 grasps = GraspSet(
-  ids,            # tuple[str, ...], length G
+  ids,            # (G,) integers, unique in the set, e.g. np.arange(G)
   object_pos,     # (G, 3)
   object_quat,    # (G, 4) wxyz
   pose_weights,   # (G, 2) (w_pos, w_rot)
@@ -193,8 +197,9 @@ save_grasp_set_npz("objects/stapler/grasps/goal_side", grasps, "wuji_hand2_right
 ```
 
 Keys in the file: `version`, `hand`, `unit_length`, `unit_angle`,
-`frame_object_pose`, `frame_tip`, `ids` and the nine arrays above
-(`pose_weights` may be omitted: all 1). Arrays are stored and used as float32.
+`frame_object_pose`, `frame_tip`, `ids` and the eight arrays above (`ids` may
+be omitted: row index; `pose_weights` too: all 1). Arrays are stored and used
+as float32, ids as int64.
 
 ## Observations
 
@@ -218,7 +223,7 @@ Policy 329 / critic 574 dims with `encoding.dim = 0`.
 - [ ] 5 tip rows (thumb first), 20 joint angles, 5 weights per part.
 - [ ] Unit quaternions and normals; normals point out of the surface.
 - [ ] Tip points on the surface (not offset by the pad depth).
-- [ ] Ids unique across every set merged into one stage list.
+- [ ] Integer ids, unique within each set (or omitted).
 - [ ] Initial grasps have real joint angles (within the joint ranges) and no
       hand-object overlap.
 - [ ] Goal joint angles of weighted fingers within the soft limits.
@@ -232,7 +237,8 @@ Policy 329 / critic 574 dims with `encoding.dim = 0`.
 | `... must lie in [0, 1]` | a weight out of range |
 | `grasp set not found` / `file not found` | path relative to the wrong folder |
 | `has both grasps.yaml and grasps.npz` | keep one |
-| `grasp ids repeat across merged sets` | the same id in two merged sets |
+| `duplicate id N` | the same id twice in one set |
+| `id must be an integer` | a non-integer id |
 | `... is outside its range [...]` | initial grasp joint beyond the joint range |
 | `... is outside its soft limits [...]` | weighted goal joint beyond the soft limits |
 | `stages with several objects are not supported yet` | one object per stage for now |

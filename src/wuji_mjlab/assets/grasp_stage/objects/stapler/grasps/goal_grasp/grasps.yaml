@@ -6,7 +6,7 @@ hand: wuji_hand2_right
 units: {length: m, angle: rad}
 frames: {object_pose: wrist, tip: object}
 grasps:
-  - id: side_grasp
+  - id: 0
     object_pose:
       pos: [0.0088, 0.03066, -0.06066]
       quat_wxyz: [0.91398, 0.0018, 0.40309, 0.04649]

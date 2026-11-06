@@ -14,6 +14,7 @@ from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply, quat_error_magnitude, quat_mul
 
+from wuji_mjlab.tasks.reorient.grasp_stage.schema import load_grasp_sets
 from wuji_mjlab.tasks.reorient.mdp._env_utils import resolve_env_ids
 from wuji_mjlab.tasks.reorient.mdp.cage import read_cage_penalty_counter
 from wuji_mjlab.tasks.reorient.mdp.observations import (
@@ -61,29 +62,51 @@ def _cached(env, key, build):
   return cache[key]
 
 
-def _param_tensor(env, data) -> torch.Tensor:
-  """``data`` (a term parameter, fixed for the env's life) as a tensor, built
-  on first use; keyed by identity, keeping ``data`` alive with it."""
-  entry = _cached(
-    env,
-    ("tensor", id(data)),
-    lambda: (data, torch.tensor(data, dtype=torch.float32, device=env.device)),
-  )
-  return entry[1]
+def host_tensor(array: np.ndarray) -> torch.Tensor:
+  """A CPU tensor sharing memory with ``array`` (float32, contiguous)."""
+  return torch.from_numpy(np.ascontiguousarray(array, dtype=np.float32))
+
+
+def gather_rows(tables: tuple[torch.Tensor, ...], idx: torch.Tensor, device):
+  """Rows ``idx`` of CPU tables of equal length, gathered on the CPU and sent
+  to ``device`` in one copy; each table's rows flattened, in table order."""
+  rows = [t[idx].reshape(len(idx), -1) for t in tables]
+  sent = torch.cat(rows, dim=1).to(device)
+  return sent.split([r.shape[1] for r in rows], dim=1)
+
+
+def sample_rows(tables: tuple[torch.Tensor, ...], n: int, device):
+  """Draw n rows (with replacement) of CPU tables; returns the CPU indices and
+  the rows on ``device`` (see ``gather_rows``)."""
+  idx = torch.randint(0, tables[0].shape[0], (n,))
+  return idx, gather_rows(tables, idx, device)
+
+
+def _init_grasp_tables(env, grasp_sets: tuple[str, ...], hand: str):
+  """The initial grasp sets' object poses and joint angles as CPU tensors over
+  the loaded arrays (no copy); only drawn rows go to the device."""
+
+  def build():
+    grasps = load_grasp_sets(grasp_sets, hand)
+    return tuple(
+      host_tensor(a) for a in (grasps.object_pos, grasps.object_quat, grasps.joint_q)
+    )
+
+  return _cached(env, ("init_grasps", tuple(grasp_sets), hand), build)
 
 
 def reset_to_init_grasp(
   env,
   env_ids,
-  object_pos: tuple,
-  object_quat: tuple,
-  joint_q: tuple,
+  grasp_sets: tuple[str, ...],
+  hand: str = "wuji_hand2_right",
   palm_pattern: str = ".*_palm_link",
   finger_joint_pattern: str = _FINGERS,
   robot_cfg: SceneEntityCfg = _ROBOT,
   object_cfg: SceneEntityCfg = _OBJECT,
 ) -> None:
-  """Put the fingers and the object in an initial grasp drawn per env.
+  """Put the fingers and the object in an initial grasp drawn per env from
+  the ``grasp_sets`` folders.
 
   The object pose is in the hand base (palm) frame. The palm pose comes from
   the mount (mocap) pose just written by the robot reset with the wrist at
@@ -95,10 +118,7 @@ def reset_to_init_grasp(
   robot: Entity = env.scene[robot_cfg.name]
   obj: Entity = env.scene[object_cfg.name]
   dev, n = env.device, env_ids.numel()
-  pos_set = _param_tensor(env, object_pos)
-  quat_set = _param_tensor(env, object_quat)
-  q_set = _param_tensor(env, joint_q)
-  idx = torch.randint(0, pos_set.shape[0], (n,), device=dev)
+  _, (pos, quat, q) = sample_rows(_init_grasp_tables(env, grasp_sets, hand), n, dev)
 
   joint_ids = _cached(
     env,
@@ -106,7 +126,7 @@ def reset_to_init_grasp(
     lambda: robot.find_joints(finger_joint_pattern)[0],
   )
   robot.write_joint_state_to_sim(
-    q_set[idx], torch.zeros_like(q_set[idx]), joint_ids=joint_ids, env_ids=env_ids
+    q, torch.zeros_like(q), joint_ids=joint_ids, env_ids=env_ids
   )
 
   mocap = robot.indexing.mocap_id
@@ -115,8 +135,8 @@ def reset_to_init_grasp(
   off_pos, off_quat = _mocap_to_palm(env, robot, palm_pattern)
   palm_pos = mount_pos + quat_apply(mount_quat, off_pos.expand(n, 3))
   palm_quat = quat_mul(mount_quat, off_quat.expand(n, 4))
-  pos_w = palm_pos + quat_apply(palm_quat, pos_set[idx])
-  quat_w = quat_mul(palm_quat, quat_set[idx])
+  pos_w = palm_pos + quat_apply(palm_quat, pos)
+  quat_w = quat_mul(palm_quat, quat)
   obj.write_root_link_pose_to_sim(torch.cat((pos_w, quat_w), -1), env_ids=env_ids)
   obj.write_root_link_velocity_to_sim(torch.zeros(n, 6, device=dev), env_ids=env_ids)
 
@@ -208,7 +228,12 @@ def grasp_joint_goal(
 
 def object_encoding(env, encoding: tuple[float, ...]) -> torch.Tensor:
   """[N, D] the object's preprocessed shape encoding (one object per stage)."""
-  return _param_tensor(env, encoding).expand(env.num_envs, -1)
+  e = _cached(
+    env,
+    ("encoding", tuple(encoding)),
+    lambda: torch.tensor(encoding, dtype=torch.float32, device=env.device),
+  )
+  return e.expand(env.num_envs, -1)
 
 
 # -- rewards -----------------------------------------------------------------

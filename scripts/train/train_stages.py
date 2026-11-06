@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 from dataclasses import asdict
@@ -32,13 +33,24 @@ from wuji_mjlab.rl.runner import WujiOnPolicyRunner
 from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
   EXAMPLE_TRAINING,
   build_stage_env_cfg,
-  env_cfg_for_dump,
 )
 from wuji_mjlab.tasks.reorient.grasp_stage.mdp import observation_layout
-from wuji_mjlab.tasks.reorient.grasp_stage.schema import load_training
+from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
+  grasp_set_file,
+  load_grasp_set,
+  load_training,
+)
 from wuji_mjlab.utils.override_utils import apply_overrides
 
 TASK = "WujiHand2_GraspStage_50Hz"
+
+
+def _sha256(path: Path) -> str:
+  digest = hashlib.sha256()
+  with open(path, "rb") as f:
+    for block in iter(lambda: f.read(1 << 20), b""):
+      digest.update(block)
+  return digest.hexdigest()
 
 
 def main() -> None:
@@ -66,15 +78,32 @@ def main() -> None:
   log_dir = Path("logs") / "rsl_rl" / agent_cfg.experiment_name / name
   (log_dir / "params").mkdir(parents=True, exist_ok=True)
   shutil.copy(training.path, log_dir / "params" / "training.yaml")
-  # The object files and grasp sets every stage uses, as read.
+  # Object files are copied; grasp sets (possibly millions of grasps) are
+  # recorded by path, checksum and size instead.
+  records = []
   for stage in training.stages:
     for obj in stage.objects:
       dst = log_dir / "params" / "objects" / obj.name
       dst.mkdir(parents=True, exist_ok=True)
       shutil.copy(obj.folder / "object.yaml", dst / "object.yaml")
-      for folder in stage.grasp_set_folders.get(obj.name, ()):
-        rel = folder.relative_to(obj.folder.resolve())
-        shutil.copytree(folder, dst / rel, dirs_exist_ok=True)
+      for role, folders in (
+        ("init", stage.init_set_folders[obj.name]),
+        ("goal", stage.goal_set_folders[obj.name]),
+      ):
+        for folder in folders:
+          path = grasp_set_file(folder)
+          records.append(
+            {
+              "stage": stage.name,
+              "object": obj.name,
+              "role": role,
+              "file": str(path),
+              "sha256": _sha256(path),
+              "bytes": path.stat().st_size,
+              "grasps": len(load_grasp_set(folder, training.hand)),
+            }
+          )
+  dump_yaml(log_dir / "params" / "grasp_sets.yaml", {"grasp_sets": records})
   dump_yaml(log_dir / "params" / "agent.yaml", asdict(agent_cfg))
   print(
     f"[INFO] {len(training.stages)} stage(s), {training.total_iterations} "
@@ -86,9 +115,7 @@ def main() -> None:
     env_cfg = build_stage_env_cfg(training, i)
     apply_overrides({"env": env_cfg}, env_overrides)
     env_cfg.seed = agent_cfg.seed + i
-    dump_yaml(
-      log_dir / "params" / f"env_stage{i}_{stage.name}.yaml", env_cfg_for_dump(env_cfg)
-    )
+    dump_yaml(log_dir / "params" / f"env_stage{i}_{stage.name}.yaml", asdict(env_cfg))
     print(
       f"[INFO] stage {i} '{stage.name}': {stage.advance_after_iterations} iterations"
     )

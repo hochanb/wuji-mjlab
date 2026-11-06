@@ -14,13 +14,19 @@ w_tip > 0 on its target and every finger with w_joint > 0 at its joint goal.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import mujoco
 import numpy as np
 import torch
 from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse, quat_inv, quat_mul
 
+from wuji_mjlab.tasks.reorient.grasp_stage.mdp import (
+  gather_rows,
+  host_tensor,
+  sample_rows,
+)
+from wuji_mjlab.tasks.reorient.grasp_stage.schema import load_grasp_sets
 from wuji_mjlab.tasks.reorient.mdp.commands import (
   InHandReorientCommand,
   InHandReorientCommandCfg,
@@ -42,44 +48,58 @@ class GraspGoalCommand(InHandReorientCommand):
   cfg: GraspGoalCommandCfg
 
   def __init__(self, cfg: GraspGoalCommandCfg, env):
-    super().__init__(cfg, env)
+    if not cfg.goal_grasp_sets:
+      raise ValueError("GraspGoalCommand: no goal grasp sets")
+    goals = load_grasp_sets(cfg.goal_grasp_sets, cfg.hand)
+    # The base class sizes its tip targets from fingertip_targets: the first
+    # goal stands in until the per-env goals below take over.
+    first = tuple(
+      zip(goals.tip_points[0].tolist(), goals.tip_normals[0].tolist(), strict=True)
+    )
+    super().__init__(replace(cfg, fingertip_targets=first), env)
     dev, n = self.device, self.num_envs
-    t = lambda x: torch.tensor(x, dtype=torch.float32, device=dev)  # noqa: E731
-    pos_palm, quat_palm = t(cfg.goal_object_pos), t(cfg.goal_object_quat)
-    # Goal object pose in the tag frame: T_tag^obj = (T_palm^tag)^-1 T_palm^obj.
+    # The goal set stays in host memory (CPU tensors over the loaded arrays);
+    # sampling sends only the drawn rows to the device (gather_rows).
+    self._goal_tables = tuple(
+      host_tensor(getattr(goals, a))
+      for a in (
+        "object_pos",
+        "object_quat",
+        "pose_weights",
+        "tip_points",
+        "tip_normals",
+        "tip_weights",
+        "joint_q",
+        "joint_weights",
+      )
+    )
+    # Goal object pose in the tag frame: T_tag^obj = (T_palm^tag)^-1 T_palm^obj,
+    # applied to the drawn rows.
     tag_pos, tag_quat = palm_to_tag(
       env.sim.mj_model,
       int(self.robot.indexing.body_ids[self.palm_body_id]),
       int(self.robot.indexing.site_ids[self.tag_site_id]),
     )
-    tag_pos, tag_quat = t(tag_pos), t(tag_quat)
-    g = pos_palm.shape[0]
-    inv = quat_inv(tag_quat).expand(g, 4)
-    self._goal_pos_tag_set = quat_apply(inv, pos_palm - tag_pos)
-    self._goal_quat_tag_set = quat_mul(inv, quat_palm)
-    self._tip_pos_set = t(cfg.goal_tip_points)
-    self._tip_dir_set = torch.nn.functional.normalize(t(cfg.goal_tip_normals), dim=-1)
-    self._tip_w_set = t(cfg.goal_tip_weights)
-    self._pose_w_set = t(cfg.goal_pose_weights)
-    self._joint_q_set = t(cfg.goal_joint_q)
-    self._joint_w_set = t(cfg.goal_joint_weights)
+    self._tag_pos = torch.tensor(tag_pos, dtype=torch.float32, device=dev)
+    self._tag_quat_inv = quat_inv(
+      torch.tensor(tag_quat, dtype=torch.float32, device=dev)
+    )
     self._finger_joint_ids, _ = self.robot.find_joints(cfg.finger_joint_pattern)
     k = len(self._tip_site_ids)
-    if self._joint_q_set.shape[-1] != len(self._finger_joint_ids):
+    if goals.joint_q.shape[-1] != len(self._finger_joint_ids):
       raise ValueError(
-        f"GraspGoalCommand: joint goals have {self._joint_q_set.shape[-1]} angles, "
+        f"GraspGoalCommand: joint goals have {goals.joint_q.shape[-1]} angles, "
         f"'{cfg.finger_joint_pattern}' matched {len(self._finger_joint_ids)} joints"
       )
-    # Per-env goal grasp (the base class reads _tip_target_*_b with expand).
+    # Per-env goal grasp (the base class reads _tip_target_*_b with expand);
+    # every env starts from the first goal until its first resample.
     self.goal_index = torch.zeros(n, dtype=torch.long, device=dev)
-    self._tip_target_pos_b = self._tip_pos_set[0].expand(n, k, 3).clone()
-    self._tip_target_dir_b = self._tip_dir_set[0].expand(n, k, 3).clone()
-    self.tip_weights = self._tip_w_set[0].expand(n, k).clone()
-    self.pose_weights = self._pose_w_set[0].expand(n, 2).clone()  # (w_pos, w_rot)
-    self.joint_goal = self._joint_q_set[0].expand(n, -1).clone()
-    self.joint_weights = self._joint_w_set[0].expand(n, k).clone()
-    self.metrics["tip_error"] = torch.zeros(n, device=dev)
-    self.metrics["joint_error"] = torch.zeros(n, device=dev)
+    self._tip_target_pos_b = torch.zeros(n, k, 3, device=dev)
+    self._tip_target_dir_b = torch.zeros(n, k, 3, device=dev)
+    self.tip_weights = torch.zeros(n, k, device=dev)
+    self.pose_weights = torch.zeros(n, 2, device=dev)  # (w_pos, w_rot)
+    self.joint_goal = torch.zeros(n, len(self._finger_joint_ids), device=dev)
+    self.joint_weights = torch.zeros(n, k, device=dev)
     # Grasp errors are read by rewards, the success gate, metrics and both
     # observation groups; compute them once per sim state. A step sees two
     # states: the rewards' (after physics) and, after the resets and
@@ -89,6 +109,14 @@ class GraspGoalCommand(InHandReorientCommand):
     self._cache_epoch = 0
     self._cache_key: tuple[int, int] | None = None
     self._cache: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+    first_idx = torch.zeros(n, dtype=torch.long)
+    self._set_goal_rows(
+      torch.arange(n, device=dev),
+      first_idx,
+      gather_rows(self._goal_tables, first_idx, dev),
+    )
+    self.metrics["tip_error"] = torch.zeros(n, device=dev)
+    self.metrics["joint_error"] = torch.zeros(n, device=dev)
 
   def compute(self, dt, env_ids=None) -> None:
     self.invalidate_grasp_errors()  # runs after sim.forward(): a new state
@@ -98,20 +126,27 @@ class GraspGoalCommand(InHandReorientCommand):
     self._cache_epoch += 1
 
   # -- goal ------------------------------------------------------------------
-  def _sample_goal_in_world(self, env_ids: torch.Tensor) -> None:
-    idx = torch.randint(
-      0, self._tip_pos_set.shape[0], (env_ids.numel(),), device=self.device
+  def _set_goal_rows(self, env_ids, idx, rows) -> None:
+    pos, quat, pose_w, tip_pos, tip_dir, tip_w, joint_q, joint_w = rows
+    n, k = len(idx), self._tip_target_pos_b.shape[1]
+    inv = self._tag_quat_inv.expand(n, 4)
+    self.goal_index[env_ids] = idx.to(self.device)
+    self.goal_pos_tag[env_ids] = quat_apply(inv, pos - self._tag_pos)
+    self.goal_quat_tag[env_ids] = quat_mul(inv, quat)
+    self.pose_weights[env_ids] = pose_w
+    self._tip_target_pos_b[env_ids] = tip_pos.view(n, k, 3)
+    self._tip_target_dir_b[env_ids] = torch.nn.functional.normalize(
+      tip_dir.view(n, k, 3), dim=-1
     )
-    self.goal_index[env_ids] = idx
-    self.goal_pos_tag[env_ids] = self._goal_pos_tag_set[idx]
-    self.goal_quat_tag[env_ids] = self._goal_quat_tag_set[idx]
-    self._tip_target_pos_b[env_ids] = self._tip_pos_set[idx]
-    self._tip_target_dir_b[env_ids] = self._tip_dir_set[idx]
-    self.tip_weights[env_ids] = self._tip_w_set[idx]
-    self.pose_weights[env_ids] = self._pose_w_set[idx]
-    self.joint_goal[env_ids] = self._joint_q_set[idx]
-    self.joint_weights[env_ids] = self._joint_w_set[idx]
+    self.tip_weights[env_ids] = tip_w
+    self.joint_goal[env_ids] = joint_q
+    self.joint_weights[env_ids] = joint_w
     self.invalidate_grasp_errors()
+
+  # -- goal ------------------------------------------------------------------
+  def _sample_goal_in_world(self, env_ids: torch.Tensor) -> None:
+    idx, rows = sample_rows(self._goal_tables, env_ids.numel(), self.device)
+    self._set_goal_rows(env_ids, idx, rows)
 
   # -- errors ----------------------------------------------------------------
   def _grasp_errors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -173,16 +208,9 @@ class GraspGoalCommand(InHandReorientCommand):
 
 @dataclass(kw_only=True)
 class GraspGoalCommandCfg(InHandReorientCommandCfg):
-  # Goal grasp set: object pose in the hand base (palm) frame, fingertip
-  # targets (object frame) and weights, finger joint goals and weights.
-  goal_object_pos: tuple[tuple[float, ...], ...] = ()
-  goal_object_quat: tuple[tuple[float, ...], ...] = ()
-  goal_pose_weights: tuple[tuple[float, float], ...] = ()  # (w_pos, w_rot)
-  goal_tip_points: tuple = ()
-  goal_tip_normals: tuple = ()
-  goal_tip_weights: tuple = ()
-  goal_joint_q: tuple = ()
-  goal_joint_weights: tuple = ()
+  # Goal grasp-set folders (concatenated), read when the command is built.
+  goal_grasp_sets: tuple[str, ...] = ()
+  hand: str = "wuji_hand2_right"
   finger_joint_pattern: str = ".*_finger.*_joint.*"
   pad_depth: float = 0.005
   # Success G: tips with w_tip > 0 within this distance [m] of their contact

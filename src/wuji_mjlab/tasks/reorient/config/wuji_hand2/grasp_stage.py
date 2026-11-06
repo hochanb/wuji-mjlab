@@ -13,8 +13,7 @@ free-body spin-up.
 
 from __future__ import annotations
 
-import copy
-from dataclasses import asdict, fields, replace
+from dataclasses import fields
 from pathlib import Path
 
 from mjlab.managers.event_manager import EventTermCfg
@@ -48,12 +47,6 @@ _TIP_REWARD_WEIGHT = 5.0
 _JOINT_REWARD_WEIGHT = 5.0
 
 
-def _grasp_fields(grasps):
-  """GraspSet arrays as nested lists for the term configs (tensors are built
-  once, when the command / reset event first runs)."""
-  return {a: getattr(grasps, a).tolist() for a in grasps.ARRAYS}
-
-
 def build_stage_env_cfg(training: TrainingSpec, stage_index: int, play: bool = False):
   stage = training.stages[stage_index]
   (obj,) = stage.objects  # one object per stage for now (validated)
@@ -73,41 +66,29 @@ def build_stage_env_cfg(training: TrainingSpec, stage_index: int, play: bool = F
       sensor.secondary = ContactMatch(mode="body", pattern="cube", entity="object")
   cfg.events.pop("object_size", None)  # scaling extents would pull parts apart
 
-  # Goal command: a goal grasp per episode.
-  goal = _grasp_fields(stage.goal_grasps[obj.name])
+  # Goal command: a goal grasp per episode. Grasp sets are passed by folder;
+  # the command and the reset read the arrays straight onto the device.
+  goal_sets = tuple(str(p) for p in stage.goal_set_folders[obj.name])
+  init_sets = tuple(str(p) for p in stage.init_set_folders[obj.name])
   base = cfg.commands["reorient_command"]
   cfg.commands["reorient_command"] = GraspGoalCommandCfg(
     **{f.name: getattr(base, f.name) for f in fields(base)}
     | {
       "goal_quat_tag_fixed": None,
-      "fingertip_targets": tuple(
-        zip(goal["tip_points"][0], goal["tip_normals"][0], strict=True)
-      ),
       "tip_point_offsets": HAND2_TIP_PAD_POINTS,
       "pad_depth": training.hand_spec.pad_depth,
-      "goal_object_pos": goal["object_pos"],
-      "goal_object_quat": goal["object_quat"],
-      "goal_pose_weights": goal["pose_weights"],
-      "goal_tip_points": goal["tip_points"],
-      "goal_tip_normals": goal["tip_normals"],
-      "goal_tip_weights": goal["tip_weights"],
-      "goal_joint_q": goal["joint_q"],
-      "goal_joint_weights": goal["joint_weights"],
+      "goal_grasp_sets": goal_sets,
+      "hand": training.hand,
     }
   )
 
   # Reset into an initial grasp (fingers and object); the fingers hold it
   # through the action warmup.
-  init = _grasp_fields(stage.init_grasps[obj.name])
   cfg.events.pop("reset_robot_joints", None)
   cfg.events["reset_object_pose"] = EventTermCfg(
     func=gmdp.reset_to_init_grasp,
     mode="reset",
-    params={
-      "object_pos": init["object_pos"],
-      "object_quat": init["object_quat"],
-      "joint_q": init["joint_q"],
-    },
+    params={"grasp_sets": init_sets, "hand": training.hand},
   )
   cfg.actions["finger_joint_pos"].warmup_hold_reset_pose = True
 
@@ -167,41 +148,6 @@ def build_stage_env_cfg(training: TrainingSpec, stage_index: int, play: bool = F
     func=gmdp.object_speed_limit
   )
   return cfg
-
-
-_GRASP_DATA_FIELDS = (
-  "fingertip_targets",
-  "goal_object_pos",
-  "goal_object_quat",
-  "goal_pose_weights",
-  "goal_tip_points",
-  "goal_tip_normals",
-  "goal_tip_weights",
-  "goal_joint_q",
-  "goal_joint_weights",
-)
-
-
-def env_cfg_for_dump(env_cfg) -> dict:
-  """``asdict(env_cfg)`` with the grasp arrays replaced by their counts (the
-  grasp files themselves are copied next to the params). The arrays are
-  swapped out before ``asdict`` so they are not deep-copied."""
-  command = env_cfg.commands["reorient_command"]
-  event = env_cfg.events["reset_object_pose"]
-  note = lambda v: f"<{len(v)} entries, see grasp files>"  # noqa: E731
-  light = copy.copy(env_cfg)
-  light.commands = {
-    **env_cfg.commands,
-    "reorient_command": replace(
-      command, **{k: note(getattr(command, k)) for k in _GRASP_DATA_FIELDS}
-    ),
-  }
-  params = {
-    k: note(v) if k in ("object_pos", "object_quat", "joint_q") else v
-    for k, v in event.params.items()
-  }
-  light.events = {**env_cfg.events, "reset_object_pose": replace(event, params=params)}
-  return asdict(light)
 
 
 def example_stage_env_cfg(play: bool = False):

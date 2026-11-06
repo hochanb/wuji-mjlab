@@ -36,7 +36,7 @@ def _only(grasps):
 
   assert len(grasps) == 1
   return SimpleNamespace(
-    id=grasps.ids[0], **{a: getattr(grasps, a)[0].tolist() for a in grasps.ARRAYS}
+    id=int(grasps.ids[0]), **{a: getattr(grasps, a)[0].tolist() for a in grasps.ARRAYS}
   )
 
 
@@ -69,7 +69,8 @@ def test_example_training_loads():
     ("goal", lambda d: d["grasps"][0]["object_pose"].update(weights={"pos": 2, "rot": 1}), "[0, 1]"),
     ("goal", lambda d: d["grasps"][0]["object_pose"].update(weights={"pos": 1}), "pos and rot"),
     ("goal", lambda d: d.update(frames={"object_pose": "world", "tip": "object"}), "frames"),
-    ("goal", lambda d: d["grasps"].append(d["grasps"][0]), "duplicate id"),
+    ("goal", lambda d: d["grasps"].append(d["grasps"][0]), "duplicate id 0"),
+    ("goal", lambda d: d["grasps"][0].update(id="side"), "id must be an integer"),
     ("training", lambda d: d["stages"][0].update(objects=["mug"]), "not found"),
     ("training", lambda d: d["stages"][0]["goal_grasps"].update(stapler=["grasps/none"]), "not found"),
     ("training", lambda d: d["stages"][0].update(objects=["stapler", "stapler2"]), "several objects"),
@@ -91,8 +92,8 @@ def test_validation_rejects(assets, target, edit, message):
 
 def test_two_stage_training_merges_grasp_sets(assets):
   folder = assets / "objects" / "stapler" / "grasps"
+  # Same ids in two sets are fine: a grasp is identified by folder and id.
   shutil.copytree(folder / "goal_grasp", folder / "goal_b")
-  _edit(folder / "goal_b" / "grasps.yaml", lambda d: d["grasps"][0].update(id="b"))
   training = assets / "trainings" / "stapler_single.yaml"
 
   def two_stages(d):
@@ -103,7 +104,12 @@ def test_two_stage_training_merges_grasp_sets(assets):
   _edit(training, two_stages)
   spec = load_training(training)
   assert [s.name for s in spec.stages] == ["s0", "s1"]
-  assert spec.stages[1].goal_grasps["stapler"].ids == ("side_grasp", "b")
+  merged = spec.stages[1].goal_grasps["stapler"]
+  assert len(merged) == 2 and merged.ids.tolist() == [0, 0]
+  assert [p.name for p in spec.stages[1].goal_set_folders["stapler"]] == [
+    "goal_grasp",
+    "goal_b",
+  ]
   assert spec.total_iterations == 2000
 
 
@@ -319,7 +325,7 @@ def test_npz_grasp_sets_round_trip_and_validate(assets):
   save_grasp_set_npz(folder, type(npz)(npz.ids, *(
     bad if a == "tip_weights" else getattr(npz, a) for a in npz.ARRAYS
   )), "wuji_hand2_right")  # fmt: skip
-  with pytest.raises(GraspStageError, match=r"tip_weights of grasp 'side_grasp'"):
+  with pytest.raises(GraspStageError, match=r"tip_weights of grasp id 0"):
     load_training(training)
 
 
@@ -336,7 +342,7 @@ def test_ten_thousand_grasps_load_fast(tmp_path):
   g, rng = 10_000, np.random.default_rng(0)
   unit = lambda x: x / np.linalg.norm(x, axis=-1, keepdims=True)  # noqa: E731
   grasps = GraspSet(
-    tuple(f"g{i}" for i in range(g)),
+    np.arange(g),
     rng.normal(size=(g, 3)),
     unit(rng.normal(size=(g, 4))),
     np.ones((g, 2)),
@@ -356,24 +362,30 @@ def test_ten_thousand_grasps_load_fast(tmp_path):
 def test_reset_event_builds_its_tensors_once(stage_env):
   stage_env.reset()
   cache = stage_env._grasp_stage_cache
-  tensors = {k: v[1] for k, v in cache.items() if k[0] == "tensor"}
-  assert len(tensors) == 3  # object pos, quat and joint goals of the init set
+  (key,) = [k for k in cache if k[0] == "init_grasps"]
+  tensors = cache[key]
+  assert [t.shape[-1] for t in tensors] == [3, 4, 20]  # pose and joints
   stage_env.reset()
-  for k, t in tensors.items():
-    assert stage_env._grasp_stage_cache[k][1] is t
+  assert all(
+    a is b for a, b in zip(stage_env._grasp_stage_cache[key], tensors, strict=True)
+  )
 
 
-def test_env_cfg_dump_summarises_grasp_data():
+def test_env_cfg_refers_to_grasp_sets_by_folder():
+  from dataclasses import asdict
+
   from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
-    env_cfg_for_dump,
     example_stage_env_cfg,
   )
 
-  data = env_cfg_for_dump(example_stage_env_cfg())
+  data = asdict(example_stage_env_cfg())
   command = data["commands"]["reorient_command"]
-  assert command["goal_tip_points"] == "<1 entries, see grasp files>"
+  (goal,) = command["goal_grasp_sets"]
+  assert goal.endswith("grasps/goal_grasp")
   params = data["events"]["reset_object_pose"]["params"]
-  assert params["joint_q"] == "<1 entries, see grasp files>"
+  (init,) = params["grasp_sets"]
+  assert init.endswith("grasps/init_rest")
+  assert command["fingertip_targets"] is None  # set by the command from the goals
 
 
 def _set_q(path, q, weights=None):
@@ -421,3 +433,37 @@ def test_joint_limits_match_the_env(stage_env):
   assert list(found) == list(names)
   env_soft = robot.data.soft_joint_pos_limits[0, ids].cpu().numpy()
   np.testing.assert_allclose(env_soft, soft, atol=1e-5)
+
+
+def test_grasp_tables_stay_on_the_host_without_copies(stage_env):
+  from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
+    EXAMPLE_TRAINING,
+  )
+  from wuji_mjlab.tasks.reorient.grasp_stage.schema import load_grasp_set
+
+  training = load_training(EXAMPLE_TRAINING)
+  stage = training.stages[0]
+  goals = load_grasp_set(stage.goal_set_folders["stapler"][0], training.hand)
+  inits = load_grasp_set(stage.init_set_folders["stapler"][0], training.hand)
+  cmd = stage_env.command_manager.get_term("reorient_command")
+  assert all(t.device.type == "cpu" for t in cmd._goal_tables)
+  assert cmd._goal_tables[6].data_ptr() == goals.joint_q.ctypes.data  # shared
+  stage_env.reset()
+  (key,) = [k for k in stage_env._grasp_stage_cache if k[0] == "init_grasps"]
+  pos, _, q = stage_env._grasp_stage_cache[key]
+  assert pos.data_ptr() == inits.object_pos.ctypes.data
+  assert q.data_ptr() == inits.joint_q.ctypes.data
+
+
+def test_gather_rows_sends_the_drawn_rows():
+  from wuji_mjlab.tasks.reorient.grasp_stage.mdp import gather_rows, sample_rows
+
+  a = torch.arange(30.0).view(10, 3)
+  b = torch.arange(100.0, 140.0).view(10, 2, 2)
+  idx = torch.tensor([7, 0, 7])
+  ra, rb = gather_rows((a, b), idx, "cpu")
+  torch.testing.assert_close(ra, a[idx])
+  torch.testing.assert_close(rb, b[idx].view(3, 4))
+  drawn, (sa, sb) = sample_rows((a, b), 5, "cpu")
+  torch.testing.assert_close(sa, a[drawn])
+  torch.testing.assert_close(sb, b[drawn].view(5, 4))
