@@ -96,7 +96,11 @@ def _frames():
 
   cfg = load_env_cfg("WujiHand2_ReorientPosWrist_50Hz", play=True)
   cfg.scene.num_envs = 1
-  ranges = cfg.events["reset_robot_joints"].params["position_range"]
+  reset_params = cfg.events["reset_robot_joints"].params
+  ranges = reset_params["position_range"]
+  # The reset ranges are offsets from the default pose when use_default_offset
+  # is set (as in the reorient reset); the sets store absolute joint angles.
+  use_default_offset = bool(reset_params.get("use_default_offset", False))
   env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
   env.reset()
   env.sim.forward()
@@ -105,12 +109,17 @@ def _frames():
   palm = robot.data.body_link_pose_w[0, cmd.palm_body_id].numpy().astype(np.float64)
   tag = robot.data.site_pose_w[0, cmd.tag_site_id].numpy().astype(np.float64)
   spawn = (obj.data.default_root_state[0, :3] + env.scene.env_origins[0]).numpy()
-  _, names = robot.find_joints(".*_finger.*_joint.*")
+  joint_ids, names = robot.find_joints(".*_finger.*_joint.*")
+  default_q = robot.data.default_joint_pos[0, joint_ids].numpy().astype(np.float64)
+  limits = robot.data.soft_joint_pos_limits[0, joint_ids].numpy().astype(np.float64)
   env.close()
   lo_hi = []
-  for name in names:
+  for i, name in enumerate(names):
     match = [r for pattern, r in ranges.items() if re.fullmatch(pattern, name)]
-    lo_hi.append(match[0] if match else (0.0, 0.0))
+    lo, hi = match[0] if match else (0.0, 0.0)
+    if use_default_offset:
+      lo, hi = default_q[i] + lo, default_q[i] + hi
+    lo_hi.append(np.clip((lo, hi), limits[i, 0], limits[i, 1]))
   return palm, tag, spawn.astype(np.float64), list(names), np.array(lo_hi)
 
 
