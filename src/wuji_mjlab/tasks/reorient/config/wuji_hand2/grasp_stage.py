@@ -47,13 +47,18 @@ _TIP_REWARD_WEIGHT = 5.0
 _JOINT_REWARD_WEIGHT = 5.0
 
 
-def build_stage_env_cfg(training: TrainingSpec, stage_index: int, play: bool = False):
+def build_stage_env_cfg(
+  training: TrainingSpec, stage_index: int, play: bool = False, wrist: bool = True
+):
+  """Env cfg for one stage; ``wrist=False`` keeps the wrist fixed at the mount
+  (no wrist joints, actions or wrist curriculum)."""
   stage = training.stages[stage_index]
   (obj,) = stage.objects  # one object per stage for now (validated)
   if obj.kind != "compound":
     raise NotImplementedError("grasp stage: mesh objects are not supported yet")
   cfg = _reorient_pos_hand2_50hz_env_cfg(((0.0, 0.0),) * 3, play=play)
-  cfg = _with_wrist(cfg)
+  if wrist:
+    cfg = _with_wrist(cfg)
   cfg.curriculum.pop("goal_rotation", None)  # goals come from the grasp set
 
   # Object.
