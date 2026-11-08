@@ -1,0 +1,34 @@
+# Dexonomy cube grasps (3000, 26 grasp types) from
+# src/tools/make_dexonomy_grasp_sets.py; grasp sets not in git.
+# many-to-one curriculum: one goal, 5 stages adding initial grasps by
+# object pose distance to the goal (nearest first).
+version: 1
+hand: wuji_hand2_right
+encoding: {name: none, dim: 0}
+object_root: ../objects
+stages:
+  - name: stage1
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_dex_3k/init_stage1]}
+    goal_grasps: {cube: [grasps/cube_dex_3k/goal]}
+    advance: {after_iterations: 1000}
+  - name: stage2
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_dex_3k/init_stage2]}
+    goal_grasps: {cube: [grasps/cube_dex_3k/goal]}
+    advance: {after_iterations: 1000}
+  - name: stage3
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_dex_3k/init_stage3]}
+    goal_grasps: {cube: [grasps/cube_dex_3k/goal]}
+    advance: {after_iterations: 1000}
+  - name: stage4
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_dex_3k/init_stage4]}
+    goal_grasps: {cube: [grasps/cube_dex_3k/goal]}
+    advance: {after_iterations: 1000}
+  - name: stage5
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_dex_3k/init_stage5]}
+    goal_grasps: {cube: [grasps/cube_dex_3k/goal]}
+    advance: {after_iterations: 1000}

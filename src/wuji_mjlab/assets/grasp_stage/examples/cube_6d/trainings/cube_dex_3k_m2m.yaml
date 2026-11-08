@@ -1,0 +1,13 @@
+# Dexonomy cube grasps (3000, 26 grasp types) from
+# src/tools/make_dexonomy_grasp_sets.py; grasp sets not in git.
+# many-to-many, one stage.
+version: 1
+hand: wuji_hand2_right
+encoding: {name: none, dim: 0}
+object_root: ../objects
+stages:
+  - name: m2m
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_dex_3k/all]}
+    goal_grasps: {cube: [grasps/cube_dex_3k/all]}
+    advance: {after_iterations: 1000}

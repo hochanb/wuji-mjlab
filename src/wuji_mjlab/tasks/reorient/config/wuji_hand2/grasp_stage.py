@@ -7,7 +7,7 @@ Built on the 50 Hz position-goal recipe with the actuated wrist. The goal
 command draws a goal grasp per episode; the reset puts the hand and object
 in an initial grasp. Observations add the masked tip errors, the grasp
 weights, the joint goal and the object encoding; rewards add the weighted
-tip and joint terms; the object speed limit guards against mujoco-warp's
+tip and joint terms (no cage-pose penalty); the object speed limit guards against mujoco-warp's
 free-body spin-up.
 """
 
@@ -144,6 +144,9 @@ def build_stage_env_cfg(training: TrainingSpec, stage_index: int, play: bool = F
   cfg.rewards["grasp_joint"] = RewardTermCfg(
     func=gmdp.grasp_joint_proximity, weight=_JOINT_REWARD_WEIGHT, params=command
   )
+  # The reorient task's pull towards the cage pose works against goal hand
+  # shapes; the hand shape is rewarded by grasp_joint alone.
+  cfg.rewards.pop("hand_pose", None)
   cfg.terminations["object_speed_limit"] = TerminationTermCfg(
     func=gmdp.object_speed_limit
   )

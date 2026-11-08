@@ -14,6 +14,8 @@ cube_6d/
     cube_6d_1k.yaml               # 1 stage, 1k grasps, 5000 iterations
     cube_6d_10k.yaml              # 1 stage, 10k grasps, 5000 iterations
     cube_6d_10k_curriculum.yaml   # 5 stages x 1000 iterations (rotation range)
+    cube_dex_3k_m2o_curriculum.yaml  # Dexonomy grasps: many inits -> one goal, 5 stages
+    cube_dex_3k_m2m.yaml          # Dexonomy grasps: many -> many, 1 stage
   objects/cube/
     object.yaml                   # 54 mm / 120 g box (compound "cube")
     grasps/<set>/{init,goal}/grasps.npz   # generated, not in git
@@ -65,6 +67,33 @@ Options:
 - `--lift`: spawn height offset in metres.
 - A new `--name` writes new sets next to these. Do not overwrite a set that a
   past run used: the run records the set's SHA-256 in `params/grasp_sets.yaml`.
+
+## Dexonomy grasp-to-grasp sets
+
+`cube_dex_3k_*` use real hand grasps of the cube instead of bare poses, from
+`src/tools/make_dexonomy_grasp_sets.py`:
+
+1. `synth`: Dexonomy grasps (`grasp_synth`) of every library grasp type, up
+   to `--k` per type, merged into one pool (seed 0: 7496 grasps of 27 types,
+   about 6 min).
+2. `sets`: 3000 grasps drawn at random (after removing near duplicates),
+   written as `grasps/cube_dex_3k/all`. With `--many-to-one 5`, one goal (the
+   medoid of the object poses, `goal`) and the other grasps as initial states
+   in 5 cumulative stages `init_stage1..5`, nearest object pose to the goal
+   first. `meta.npz` keeps the grasp type and squeeze targets per grasp.
+
+The grasp is judged by the hand shape: `--tip-weights none` turns the tip
+terms off, and `--joint-weights contact` requires the joints of the fingers
+that touch the cube (the others are left free).
+
+```bash
+OBJ=src/wuji_mjlab/assets/grasp_stage/examples/cube_6d/objects/cube
+CUDA_VISIBLE_DEVICES=0 pixi run python src/tools/make_dexonomy_grasp_sets.py synth \
+  --object cube --k 400 --seeds 0 --out tmp/dex_cube_pool_s0.npz
+CUDA_VISIBLE_DEVICES=0 pixi run python src/tools/make_dexonomy_grasp_sets.py sets \
+  --pool tmp/dex_cube_pool_s0.npz --object-dir $OBJ --name cube_dex_3k --count 3000 \
+  --many-to-one 5 --many-to-many --tip-weights none --joint-weights contact --training
+```
 
 ## Training
 
