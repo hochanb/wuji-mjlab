@@ -9,11 +9,11 @@ are validated before the first env is built.
 
 With ``--gpu-ids 0,1`` one worker per GPU trains a single policy (rsl_rl
 multi-GPU, like ``train_rsl_rl.py``); ``env.scene.num_envs`` is per GPU.
-``--fixed-wrist`` trains without the actuated wrist.
+The wrist is fixed at the mount unless ``--wrist`` adds the actuated wrist.
 
 Usage:
   CUDA_VISIBLE_DEVICES=0 pixi run train-stages \\
-    [--training <training.yaml>] [--gpu-ids 0,1] [--fixed-wrist] \\
+    [--training <training.yaml>] [--gpu-ids 0,1] [--wrist] \\
     [env.<path>=<value> ...] [agent.<path>=<value> ...]
 """
 
@@ -126,7 +126,9 @@ def main() -> None:
     "(default: one process on the visible device)",
   )
   parser.add_argument(
-    "--fixed-wrist", action="store_true", help="train without the actuated wrist"
+    "--wrist",
+    action="store_true",
+    help="train with the actuated wrist (default: wrist fixed at the mount)",
   )
   args, overrides = parser.parse_known_args()
   env_overrides = [o for o in overrides if o.startswith("env.")]
@@ -134,7 +136,7 @@ def main() -> None:
   if len(env_overrides) + len(agent_overrides) != len(overrides):
     raise SystemExit(f"Overrides must start with env. or agent.: {overrides}")
   gpu_ids = [int(g) for g in args.gpu_ids.split(",")] if args.gpu_ids else None
-  wrist = not args.fixed_wrist
+  wrist = args.wrist
 
   training = load_training(args.training)  # validates every stage up front
   agent_cfg = load_rl_cfg(TASK)

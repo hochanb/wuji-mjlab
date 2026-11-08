@@ -3,7 +3,8 @@
 """Wuji Hand 2 grasp-stage env: one task whose object, initial grasps and goal
 grasps come from a stage of a training file (see ``grasp_stage.schema``).
 
-Built on the 50 Hz position-goal recipe with the actuated wrist. The goal
+Built on the 50 Hz position-goal recipe, with the wrist fixed at the mount by
+default (``wrist=True`` adds the actuated 6-DoF wrist). The goal
 command draws a goal grasp per episode; the reset puts the hand and object
 in an initial grasp. Observations add the masked tip errors, the grasp
 weights, the joint goal and the object encoding; rewards add the weighted
@@ -48,10 +49,10 @@ _JOINT_REWARD_WEIGHT = 5.0
 
 
 def build_stage_env_cfg(
-  training: TrainingSpec, stage_index: int, play: bool = False, wrist: bool = True
+  training: TrainingSpec, stage_index: int, play: bool = False, wrist: bool = False
 ):
-  """Env cfg for one stage; ``wrist=False`` keeps the wrist fixed at the mount
-  (no wrist joints, actions or wrist curriculum)."""
+  """Env cfg for one stage. The wrist is fixed at the mount by default;
+  ``wrist=True`` adds the actuated wrist (joints, actions, wrist curriculum)."""
   stage = training.stages[stage_index]
   (obj,) = stage.objects  # one object per stage for now (validated)
   if obj.kind != "compound":
