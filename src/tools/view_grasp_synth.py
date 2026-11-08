@@ -27,6 +27,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 import viser
+from mjlab.sim import MujocoCfg
 from wuji_mjlab.grasp_synth import (
   GRASP_TYPES,
   GraspObject,
@@ -122,10 +123,26 @@ class _Cell:
     )
 
 
-def view(args, obj: GraspObject, cfg: GraspSynthCfg, data: dict) -> None:
-  syn = GraspSynthesizer(cfg)
-  syn._setup(obj, 1)  # model with the synthesizer's physics options
-  m = syn.model
+def _cpu_model(obj: GraspObject, cfg: GraspSynthCfg) -> mujoco.MjModel:
+  """The synthesizer's hand + object model with its physics options."""
+  m = GraspSynthesizer(cfg)._build_model(obj)
+  MujocoCfg(
+    timestep=cfg.timestep,
+    cone=cfg.cone,
+    impratio=cfg.impratio,
+    iterations=cfg.solver_iterations,
+    ls_iterations=cfg.ls_iterations,
+  ).apply(m)
+  return m
+
+
+def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
+  """``obj``: one GraspObject, or {group: GraspObject}. Optional data keys:
+  ``<group>/pose<row>`` per-grasp object poses, ``row_names``."""
+  objs = obj if isinstance(obj, dict) else dict.fromkeys(args.types, obj)
+  models = {id(o): _cpu_model(o, cfg) for o in objs.values()}
+  # Hand geoms come first and the object body last in every model.
+  m = models[id(objs[args.types[0]])]
   poses = data["poses"]
   hand_q = np.asarray(cfg.hand_quat_w, float)
   hand_q /= np.linalg.norm(hand_q)
@@ -148,6 +165,7 @@ def view(args, obj: GraspObject, cfg: GraspSynthCfg, data: dict) -> None:
   server.scene.set_up_direction("+z")
   groups: dict[str, dict] = {}
   for t in args.types:
+    o, mt = objs[t], models[id(objs[t])]
     cells, empty = [], []
     for p in range(len(poses)):
       q_all, res = data[f"{t}/q{p}"], data[f"{t}/res{p}"]
@@ -156,9 +174,11 @@ def view(args, obj: GraspObject, cfg: GraspSynthCfg, data: dict) -> None:
         offset = np.array([g * SPACING, -p * SPACING, 0.0])
         row = data["row_names"][p] if "row_names" in data else f"pose {p}"
         label = f"{row} / grasp {g}  r={res[g]:.3f}"
-        cells.append(_Cell(m, offset, q_all[g], tgt[g], poses[p], label))
+        pose = data[f"{t}/pose{p}"][g] if f"{t}/pose{p}" in data else poses[p]
+        cells.append(_Cell(mt, offset, q_all[g], tgt[g], pose, label))
       if len(q_all) == 0:
-        empty.append((np.array([0.0, -p * SPACING, 0.0]), poses[p]))
+        row = data["row_names"][p] if "row_names" in data else f"pose {p}"
+        empty.append((np.array([0.0, -p * SPACING, 0.0]), poses[p], row))
     handles: list = []
     for c in cells:
       c.reset()
@@ -166,17 +186,17 @@ def view(args, obj: GraspObject, cfg: GraspSynthCfg, data: dict) -> None:
         f"/{t}/label_{id(c)}", c.label_text, position=c.offset + (0, 0, 0.13)
       )
       handles.append(c.label)
-    for i, (offset, pose) in enumerate(empty):
+    for i, (offset, pose, row) in enumerate(empty):
       handles.append(
         server.scene.add_label(
-          f"/{t}/empty_label{i}", f"pose {i}: no grasp", position=offset + (0, 0, 0.13)
+          f"/{t}/empty_label{i}", f"{row}: no grasp", position=offset + (0, 0, 0.13)
         )
       )
       handles.append(
         server.scene.add_mesh_simple(
           f"/{t}/empty_object{i}",
-          np.asarray(obj.mesh.vertices),
-          np.asarray(obj.mesh.faces),
+          np.asarray(o.mesh.vertices),
+          np.asarray(o.mesh.faces),
           color=(150, 150, 150),
           opacity=0.5,
           wxyz=_quat_mul(hand_q, pose[3:]),
@@ -201,8 +221,8 @@ def view(args, obj: GraspObject, cfg: GraspSynthCfg, data: dict) -> None:
         )
       meshes["object"] = server.scene.add_batched_meshes_simple(
         f"/{t}/object",
-        np.asarray(obj.mesh.vertices),
-        np.asarray(obj.mesh.faces),
+        np.asarray(o.mesh.vertices),
+        np.asarray(o.mesh.faces),
         batched_wxyzs=ones_q,
         batched_positions=zeros_p,
         batched_colors=(230, 150, 40),
@@ -262,7 +282,8 @@ def view(args, obj: GraspObject, cfg: GraspSynthCfg, data: dict) -> None:
     draw(choice.value)
 
   def set_gravity(_=None) -> None:
-    m.opt.gravity[:] = gravity_palm if gravity.value else 0.0
+    for model in models.values():
+      model.opt.gravity[:] = gravity_palm if gravity.value else 0.0
 
   choice.on_update(show)
   restart.on_click(reset_all)
@@ -284,7 +305,7 @@ def view(args, obj: GraspObject, cfg: GraspSynthCfg, data: dict) -> None:
         for c in cells:
           if state["step"] < settle:
             c.pin()
-          mujoco.mj_step(m, c.data)
+          mujoco.mj_step(c.m, c.data)
         state["step"] += 1
       draw(t)
       held = 0

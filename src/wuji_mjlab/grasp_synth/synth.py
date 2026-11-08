@@ -41,6 +41,7 @@ if the budget runs out (empty when none).
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -67,6 +68,9 @@ from .wrench import balance_contact_forces
 
 NUM_JOINTS = 20
 PALM_BODY = "right_palm_link"
+# Wrist (palm) orientation in the training env (WujiHand2_ReorientPosWrist /
+# GraspStage) at reset: palm up, pitched 10 deg by the mount.
+TRAINING_WRIST_QUAT_W = (0.541675, 0.45452, 0.45452, 0.541675)
 # Mildly open hand with the thumb turned towards the fingers.
 DEFAULT_INIT_JOINT_POS: dict[str, float] = {
   ".*_finger1_joint1": 0.8,
@@ -84,9 +88,9 @@ class GraspSynthCfg:
   """Initial finger joint angles: 20 values (finger1 joint1 .. finger5
   joint4) or {regex: value}, first match wins. Fingers not in the grasp type
   stay here."""
-  hand_quat_w: tuple[float, float, float, float] = (0.5, 0.5, 0.5, 0.5)
+  hand_quat_w: tuple[float, float, float, float] = TRAINING_WRIST_QUAT_W
   """Hand base (palm) orientation in the world, wxyz: the gravity direction
-  (``gravity``). The default is the reorient env's hand, palm up."""
+  (``gravity``). The default is the training env's wrist (palm up, pitched 10 deg)."""
   soft_limit_factor: float = 0.9
   """Grasps keep the joints within this fraction of their range."""
 
@@ -115,6 +119,10 @@ class GraspSynthCfg:
   align_stiffness: float = 0.01  # N m (at 90 deg)
   retarget_every: int = 10
   joint_damping: float = 0.05  # N m s / rad
+  close_steps: int = 150
+  close_torque: float = 0.05
+  """After the springs, the grasping fingers' flexion joints get this torque
+  [N m] for ``close_steps`` (0 to skip)."""
   contact_margin: float = 0.001
   """Refinement keeps the hand this far off the object (MuJoCo margin)."""
   touch_dist: float = 0.002
@@ -125,6 +133,9 @@ class GraspSynthCfg:
 
   # Filters.
   max_penetration: float = 0.001
+  touch_fraction: float = 1.0
+  """Grasping fingers that must touch the object (fraction; the palm always
+  must when the grasp type has it). Below 1 only to seed templates."""
   friction: float = 0.5
   min_force_share: float = 0.5
   """Share of the total normal force spread over the grasp-type contacts when
@@ -178,7 +189,11 @@ class GraspSynthResult:
 
 @dataclass
 class _GraspCtx:
-  """Grasp-type tensors: contacts (C) and the joints they move."""
+  """Grasp-type tensors: contacts (C) and the joints they move.
+
+  Per-world contact sets (Dexonomy templates) have a leading world dim on
+  every field, ``mask`` (B, C) for padded contacts and ``fingers`` as a
+  (B, 6) mask."""
 
   body: torch.Tensor  # (C,)
   point: torch.Tensor  # (C, 3) body frame
@@ -187,6 +202,26 @@ class _GraspCtx:
   finger: torch.Tensor  # (C,) 1..5
   fingers: torch.Tensor  # (F,) grasping fingers
   active_joint: torch.Tensor  # (20,) joints of grasping fingers
+  mask: torch.Tensor | None = None
+
+  @property
+  def batched(self) -> bool:
+    return self.body.dim() == 2
+
+  def finger_mask(self) -> torch.Tensor:
+    """Grasping fingers as a (6,) or (B, 6) mask (index 0: palm)."""
+    if self.batched:
+      return self.fingers
+    out = torch.zeros(6, dtype=torch.bool, device=self.body.device)
+    out[self.fingers] = True
+    return out
+
+  def rows(self, idx: torch.Tensor) -> _GraspCtx:
+    """Worlds ``idx`` of a per-world context."""
+    return _GraspCtx(**{
+      f.name: None if getattr(self, f.name) is None else getattr(self, f.name)[idx]
+      for f in dataclasses.fields(self)
+    })  # fmt: skip
 
 
 def _quat_to_mat(q: torch.Tensor) -> torch.Tensor:
@@ -311,6 +346,11 @@ class GraspSynthesizer:
     self.joint_finger = torch.tensor(
       [int(n[len("right_finger")]) for n in self.joint_names], device=dev
     )
+    # Distal flexion joints (positive closes) curled when closing: PIP / DIP
+    # of the fingers, MCP / IP of the thumb.
+    joint_no = torch.tensor([int(n[-1]) for n in self.joint_names], device=dev)
+    self.geom_body = torch.tensor(model.geom_bodyid, dtype=torch.long, device=dev)
+    self.flex_joint = joint_no >= 3
 
     # Geoms: object parts, and the finger (0 = palm) of each hand geom.
     self.obj_geom = torch.zeros(model.ngeom, dtype=torch.bool, device=dev)
@@ -369,9 +409,29 @@ class GraspSynthesizer:
   def _contact_frames(self, ctx: _GraspCtx) -> tuple[torch.Tensor, torch.Tensor]:
     """Grasp-type contact points and outward normals, world, (B, C, 3) each."""
     data = self.sim.data
+    if ctx.batched:
+      w = torch.arange(self.nworld, device=ctx.body.device)[:, None]
+      rot = data.xmat[w, ctx.body].reshape(self.nworld, -1, 3, 3)
+      p = data.xpos[w, ctx.body] + torch.einsum("bcij,bcj->bci", rot, ctx.point)
+      return p, torch.einsum("bcij,bcj->bci", rot, ctx.normal)
     rot = data.xmat[:, ctx.body].reshape(self.nworld, -1, 3, 3)
     p = data.xpos[:, ctx.body] + torch.einsum("bcij,cj->bci", rot, ctx.point)
     return p, torch.einsum("bcij,cj->bci", rot, ctx.normal)
+
+  def _touching_bodies(self) -> torch.Tensor:
+    """(B, nbody): hand bodies in contact with the object (within the
+    current margin) at the last step."""
+    data = self.sim.data
+    n = int(data.nacon[0])
+    world, geom = data.contact.worldid[:n].long(), data.contact.geom[:n].long()
+    obj1 = self.obj_geom[geom[:, 0]]
+    hand_obj = obj1 ^ self.obj_geom[geom[:, 1]]
+    body = self.geom_body[torch.where(obj1, geom[:, 1], geom[:, 0])]
+    out = torch.zeros(
+      self.nworld, self.model.nbody, dtype=torch.bool, device=body.device
+    )
+    out[world[hand_obj], body[hand_obj]] = True
+    return out
 
   def _joint_torque(self, points, forces, chain) -> torch.Tensor:
     """J^T f for forces at hand points, (B, C, 3) x2 -> (B, 20); ``chain``
@@ -431,10 +491,41 @@ class GraspSynthesizer:
       spring = spring * (cfg.max_spring_force / norm).clamp(max=1.0)
       # Turn each contact's surface normal against the object normal.
       align = cfg.align_stiffness * torch.cross(n_hand, -normal, dim=-1)
+      if ctx.mask is not None:  # padded contacts
+        spring = spring * ctx.mask[..., None]
+        align = align * ctx.mask[..., None]
       tau = self._joint_torque(p_hand, spring, ctx.chain)
       tau = tau + self._joint_moment(align, ctx.chain)
       tau = tau - cfg.joint_damping * data.qvel[:, :NUM_JOINTS]
+      # No push past the soft limits (grasps must stay within them).
+      qpos = data.qpos[:, :NUM_JOINTS]
+      out = ((qpos >= self.soft_range[:, 1]) & (tau > 0)) | (
+        (qpos <= self.soft_range[:, 0]) & (tau < 0)
+      )
+      tau = torch.where(out, 0.0, tau)
       data.qfrc_applied[:, :NUM_JOINTS] = torch.where(active, tau, 0.0)
+      sim.step()
+    # Close: springs off, the grasping fingers curl (flexion joints). The
+    # springs pull to the nearest surface point, which can hold a finger just
+    # short of the object (e.g. past an edge). A joint stops once a link it
+    # moves touches the object (so a finger touching with its middle phalanx
+    # only curls the distal one), or just short of its soft limit.
+    # The other joints, and the stopped ones, are held where they are by the
+    # position actuators: otherwise the curling torque's reaction would open
+    # the proximal joints and pull the finger off the object.
+    curl = active & self.flex_joint
+    stop = self.soft_range[:, 1] - 0.05
+    hold = data.qpos[:, :NUM_JOINTS].clone()
+    for _ in range(cfg.close_steps):
+      self._pin_object(pose)
+      qpos = data.qpos[:, :NUM_JOINTS]
+      blocked = (self._touching_bodies().float() @ self.body_chain) > 0
+      go = curl & ~blocked & (qpos < stop)
+      hold = torch.where(go, qpos, hold)
+      data.ctrl[:] = hold
+      tau = torch.where(go, cfg.close_torque, 0.0)
+      tau = tau - cfg.joint_damping * data.qvel[:, :NUM_JOINTS]
+      data.qfrc_applied[:, :NUM_JOINTS] = tau
       sim.step()
     data.qfrc_applied[:] = 0.0
 
@@ -564,25 +655,35 @@ class GraspSynthesizer:
     )  # fmt: skip
 
   def _chunked(self, fn, pose, q0, *args):
-    """Run ``fn(pose, q0, *args) -> dict`` over chunks of nworld rows."""
+    """Run ``fn(pose, q0, *args) -> dict`` over chunks of nworld rows; a
+    per-world context among ``args`` is chunked too."""
     n, out = len(pose), []
     for s in range(0, n, self.nworld):
       e = min(n, s + self.nworld)
       pad = self.nworld - (e - s)
-      p = torch.cat((pose[s:e], pose[s : s + 1].expand(pad, -1)))
-      q = torch.cat((q0[s:e], q0[s : s + 1].expand(pad, -1)))
-      out.append({k: v[: e - s] for k, v in fn(p, q, *args).items()})
+      rows = torch.cat(
+        (torch.arange(s, e), torch.full((pad,), s, dtype=torch.long))
+      ).to(pose.device)
+      chunk_args = [
+        a.rows(rows) if isinstance(a, _GraspCtx) and a.batched else a for a in args
+      ]
+      res = fn(pose[rows], q0[rows], *chunk_args)
+      out.append({k: v[: e - s] for k, v in res.items()})
     return {k: torch.cat([o[k] for o in out]) for k in out[0]}
 
   def _verify(self, pose, q0, ctx: _GraspCtx) -> dict[str, torch.Tensor]:
     cfg = self.cfg
     r = self._refine(pose, q0, ctx, cfg.verify_steps)
-    fingers = ctx.fingers
+    fingers = ctx.finger_mask()
     no_pen = (r["pen"].amax(1) <= cfg.max_penetration) & (
       r["self_pen"] <= cfg.max_penetration
     )
-    touch = r["touch"][:, fingers].all(1)
-    limits = r["within"][:, fingers].all(1)
+    # The palm (when in the grasp type) must touch; of the fingers, at least
+    # touch_fraction of the grasping ones.
+    touching = r["touch"] & fingers
+    need = torch.ceil(cfg.touch_fraction * fingers[..., 1:].sum(-1) - 1e-6)
+    touch = (touching[:, 1:].sum(1) >= need) & (touching[:, 0] | ~fingers[..., 0])
+    limits = (r["within"] | ~fingers).all(1)
     # Balance over the actual contacts (any hand link, palm included).
     points, inward, chains, mask = self._object_contacts(
       cfg.touch_dist, cfg.max_contacts

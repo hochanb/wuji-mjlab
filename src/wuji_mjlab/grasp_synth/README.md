@@ -1,9 +1,74 @@
 # Grasp synthesis (Wuji Hand 2)
 
+Two tools after Dexonomy ([arXiv:2504.18829](https://arxiv.org/abs/2504.18829)).
+Every attempt is one mujoco-warp world, so attempts run in parallel on one GPU.
+
+- `DexonomySynthesizer`: the object pose is an output. A hand shape
+  (template) is fitted around the object, then refined and validated.
+- `GraspSynthesizer`: the object pose in the wrist frame is an input; only
+  the fingers are searched.
+
+## DexonomySynthesizer (object pose as output)
+
+```python
+from wuji_mjlab.grasp_synth import DexonomyCfg, DexonomySynthesizer, GraspObject
+
+dex = DexonomySynthesizer(DexonomyCfg(
+  wrist_quat_w=(0.541675, 0.45452, 0.45452, 0.541675),  # default: training env wrist
+))
+obj = GraspObject.from_file("mug.obj", mass=0.15)
+res = dex.generate(obj, "tripod", k=8)          # library templates of the type
+res = dex.generate(obj, "tripod", k=8, hand_q=q20)  # or a given hand shape (pads)
+res.object_pose   # (n <= 8, 7) object pose in the wrist frame, pos + wxyz
+res.joint_pos     # (n, 20) finger joints; res.joint_target: squeeze targets
+```
+
+- **Input:** the wrist orientation in the world. Gravity is always world -z,
+  so the orientation only sets the gravity direction relative to the hand.
+  The object is fixed at the identity.
+- **Output:** the result expressed in the wrist frame, with the wrist at that
+  orientation.
+- **Templates** (`templates.yaml`, `templates.py`): a template is a hand shape
+  plus the link surface points and normals that touch. The default library
+  was made from validated cube grasps with `template_from_grasp`.
+- **Template update:** with `grow_templates=True`, every validated grasp
+  becomes a template of its type, after Dexonomy's template update. It must
+  touch with the source template's fingers and differ by 0.1 rad on some
+  joint; there are at most `max_templates` per type. New templates are used
+  from the next round on and stay in `dex.library` for later calls (other
+  objects). Nothing is written until `dex.save_templates(path)`; the
+  package's default file is refused unless `overwrite_default=True`. A saved
+  library is loaded with `DexonomySynthesizer(cfg, templates=path)`.
+
+```python
+dex = DexonomySynthesizer(DexonomyCfg(grow_templates=True))
+for obj in objects:
+  dex.generate(obj, "five_tip", k=8)
+dex.save_templates("my_templates.yaml")
+dex = DexonomySynthesizer(DexonomyCfg(), templates="my_templates.yaml")
+```
+
+1. **Global alignment** (object frame, batched Adam over all templates). A template contact is
+   put on a random surface point, normals opposed, with a random turn about
+   the normal. The hand pose is then optimised so that every contact lies on
+   the surface against the normal. Filters:
+   - alignment error (`max_align_rms`, `max_align_angle`);
+   - template-pose penetration (palm 1 mm, fingers 5 mm);
+   - contact-force balance carrying the object's weight. Gravity in the
+     object frame is `R_obj<-wrist g_wrist`, so it differs per sample.
+2. **Distinct poses.** Poses closer than 5 mm and 10° to one already kept
+   are dropped.
+3. **Refinement and validation.** As in `GraspSynthesizer` below: refine the
+   grasping fingers, then the penetration / touch / joint-limit / balance
+   filters and the hold test under gravity.
+
+At most `k * attempts_per_sample` grasps are refined and validated, over at
+most `max_rounds` alignment rounds.
+
+## GraspSynthesizer (object pose as input)
+
 Finger joint configurations that hold an object at given poses in the hand
-base frame. The method follows the simulation stages of Dexonomy
-([arXiv:2504.18829](https://arxiv.org/abs/2504.18829)). Every attempt is one
-mujoco-warp world, so all poses run in parallel on one GPU.
+base frame.
 
 ```python
 import numpy as np
@@ -11,7 +76,7 @@ from wuji_mjlab.grasp_synth import GraspObject, GraspSynthCfg, GraspSynthesizer
 
 syn = GraspSynthesizer(GraspSynthCfg(
   init_joint_pos={".*_finger1_joint1": 0.8, ".*_finger1_joint2": -0.3, ".*": 0.0},
-  hand_quat_w=(0.5, 0.5, 0.5, 0.5),   # palm up (reorient env): gravity direction
+  hand_quat_w=(0.541675, 0.45452, 0.45452, 0.541675),  # training env wrist: gravity
   attempts_per_sample=10,             # N: at most k * N attempts per pose
 ))
 obj = GraspObject.from_file("mug.obj", mass=0.15)   # or GraspObject.box(half_size)
@@ -21,7 +86,7 @@ res.joint_pos[0]     # (n <= 8, 20) grasps for pose 0, joint order res.joint_nam
 res.joint_target[0]  # (n, 20) position targets that hold the object (squeeze)
 ```
 
-## Inputs and outputs
+### Inputs and outputs
 
 | Item | Meaning |
 |---|---|
@@ -36,7 +101,7 @@ res.joint_target[0]  # (n, 20) position targets that hold the object (squeeze)
 The result also has `wrench_residual` per grasp, `attempts` per pose and
 `stats`, which counts the candidates that survived each stage.
 
-## Method
+### Method
 
 Each grasp type is a set of hand contacts: the fingertip pads, plus the palmar
 side of the middle and proximal phalanges for `power`. In the refinement
@@ -70,7 +135,18 @@ An attempt is one verified combination. A pose stops at k successes or at
 k * N attempts. A round in which no balanced combination is found also uses
 up the attempts it would have verified.
 
-## Notes
+### Notes
+
+- Refinement ends with a closing phase. The springs are switched off and the
+  grasping fingers' distal flexion joints (PIP / DIP; the thumb's MCP / IP)
+  curl with `close_torque`. A joint stops once a link it moves touches the
+  object, or just short of its soft limit. The other joints hold their
+  position. This reaches the fingers that the nearest-point springs leave
+  short of the object, e.g. a fingertip just past an edge.
+- `power_palm` adds a palm contact to `power`; the palm must touch the
+  object. `touch_fraction` < 1 lets only part of the grasping fingers touch
+  (the palm still must). It is meant for seeding templates, as for the
+  small-diameter rod.
 
 - The hold test includes gravity (`gravity` = 9.81) in the `hand_quat_w`
   orientation, so the grip must also hold the object's weight; 0 only checks
