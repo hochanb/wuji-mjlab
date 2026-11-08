@@ -73,6 +73,39 @@ dex = DexonomySynthesizer(DexonomyCfg(), templates="my_templates.yaml")
 At most `k * attempts_per_sample` grasps are refined and validated, over at
 most `max_rounds` alignment rounds.
 
+## Grasp types and the template library
+
+- `GRASP_TYPES` has the hand-made types (`pinch`, `tripod`, `five_tip`,
+  `power`, `power_palm`, `adducted_thumb`).
+- It also has the 33 GRASP taxonomy types (`1_large_diameter` ..
+  `33_inferior_pincer`), from `taxonomy.yaml`. These were retargeted from
+  Dexonomy's Shadow-hand annotations (CC BY-NC 4.0). Each type keeps its
+  contacting links and the face they touch with (`side`: palmar / radial /
+  ulnar / dorsal), so the lateral and adduction grips use the finger sides.
+  Each type also has a starting hand shape: the Shadow finger joints mapped
+  onto Wuji's, then the contacting fingers fitted jointly with a similarity
+  transform of the Shadow contacts, which keeps their relative geometry.
+- A type with no library template starts from that hand shape. This is
+  Dexonomy's one annotated template per type.
+- `joint_bounds` (in `taxonomy.yaml`, or on a `GraspType`) fix a type's
+  posture. Examples: fingers perpendicular to the palm and straight for
+  palmar / parallel extension; no hyperextension for adduction grip; curled
+  fingers for prismatic; an opposed, wrapping thumb for small diameter; the
+  thumb beside the index for adducted thumb. Refinement keeps the joints
+  inside the bounds, and grasps outside them fail, so templates keep the
+  type's shape.
+- `src/tools/build_grasp_templates.py` builds the library:
+  1. It drops templates outside their type's bounds.
+  2. Seeds per taxonomy type on the objects that suit it (`TYPE_CATEGORIES`,
+     e.g. books for parallel extension, pens for writing tripod, small
+     objects for tip pinch). Each object is placed where the type's hand
+     shape holds it, against the palm when the type has a palm contact. The
+     fingers are explored from that shape with looser seed filters.
+  3. Growth with Dexonomy on the same matched objects; `--objaverse-epoch`
+     adds Objaverse meshes for every type.
+
+  The result is written to `templates.yaml`.
+
 ## GraspSynthesizer (object pose as input)
 
 Finger joint configurations that hold an object at given poses in the hand

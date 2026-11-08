@@ -41,7 +41,13 @@ import numpy as np
 import torch
 import trimesh
 
-from .grasp_types import GRASP_TYPES, PAD_DEPTH, GraspType, resolve_contact
+from .grasp_types import (
+  GRASP_TYPES,
+  PAD_DEPTH,
+  TAXONOMY_JOINT_POS,
+  GraspType,
+  resolve_contact,
+)
 from .object_model import GraspObject
 from .synth import (
   NUM_JOINTS,
@@ -287,6 +293,8 @@ class DexonomySynthesizer:
     finger = torch.zeros(t, c, dtype=torch.long, device=dev)
     mask = torch.zeros(t, c, dtype=torch.bool, device=dev)
     fingers = torch.zeros(t, 6, dtype=torch.bool, device=dev)
+    joint_lo = torch.stack([x[0].joint_lo for x in prepared])
+    joint_hi = torch.stack([x[0].joint_hi for x in prepared])
     for k, (ctx, *_) in enumerate(prepared):
       m = len(ctx.body)
       body[k, :m], point[k, :m], normal[k, :m] = ctx.body, ctx.point, ctx.normal
@@ -300,6 +308,8 @@ class DexonomySynthesizer:
       finger=finger,
       fingers=fingers,
       active_joint=fingers[:, syn.joint_finger],
+      joint_lo=joint_lo,
+      joint_hi=joint_hi,
       mask=mask,
     )
 
@@ -352,8 +362,13 @@ class DexonomySynthesizer:
       return [grasp_type]
     if isinstance(grasp_type, (list, tuple)):
       return list(grasp_type)
-    if hand_q is None:
+    if hand_q is None and grasp_type in self.library and self.library[grasp_type]:
       return list(self.library[grasp_type])
+    if hand_q is None and grasp_type in TAXONOMY_JOINT_POS:
+      # No library template yet: start from the taxonomy hand shape.
+      hand_q = TAXONOMY_JOINT_POS[grasp_type]
+    if hand_q is None:
+      raise KeyError(f"no templates for grasp type {grasp_type!r}")
     # A given hand shape: the grasp type's pad contacts.
     gtype = GRASP_TYPES[grasp_type] if isinstance(grasp_type, str) else grasp_type
     model, contacts = self.synth.model, []
@@ -384,6 +399,7 @@ class DexonomySynthesizer:
       finger=torch.tensor([c.finger for c in tpl.contacts], device=dev),
       fingers=fingers,
       active_joint=torch.isin(syn.joint_finger, fingers),
+      **syn._type_bounds(GRASP_TYPES.get(tpl.name)),
     )
 
   def generate(
@@ -397,6 +413,7 @@ class DexonomySynthesizer:
     templates are used), a ``GraspTemplate`` or a list of them; with
     ``hand_q`` (20 joint angles) the hand shape is given and the contacts are
     the grasp type's pads."""
+    self.synth._setup(obj, self.synth.cfg.num_worlds)  # the model for templates
     return self._generate(obj, [(self._templates(grasp_type, hand_q), k)])[0]
 
   def generate_many(
@@ -408,6 +425,7 @@ class DexonomySynthesizer:
     want = (
       grasp_types if isinstance(grasp_types, dict) else dict.fromkeys(grasp_types, k)
     )
+    self.synth._setup(obj, self.synth.cfg.num_worlds)  # the model for templates
     groups = [(self._templates(name, None), n) for name, n in want.items()]
     return dict(zip(want, self._generate(obj, groups), strict=True))
 
@@ -423,6 +441,7 @@ class DexonomySynthesizer:
     def prepare(tpl: GraspTemplate):
       ctx = self._ctx(tpl)
       q = torch.tensor(tpl.joint_pos, dtype=torch.float32, device=dev)
+      q = torch.maximum(torch.minimum(q, ctx.joint_hi), ctx.joint_lo)
       return (ctx, q, *self._template(q, ctx))
 
     # All templates of all groups; group_of[i] is the group of template i.

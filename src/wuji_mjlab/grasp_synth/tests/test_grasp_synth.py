@@ -192,3 +192,24 @@ def test_template_library_save_load_and_default_protected(tmp_path):
   assert load_templates(path) == dex.library
   with pytest.raises(ValueError, match="default library"):
     dex.save_templates(TEMPLATES_PATH)
+
+
+def test_taxonomy_types_resolve_with_sides():
+  from wuji_mjlab.grasp_synth.grasp_types import TAXONOMY
+
+  spec = get_hand2_reorient_spec(partial(_get_spec, wuji_hand2_xml_path("right")))
+  model = spec.compile()
+  lo, hi = model.jnt_range[:20].T
+  assert len(TAXONOMY) == 33
+  for name, (gtype, q) in TAXONOMY.items():
+    assert len(q) == 20 and np.all(np.asarray(q) >= lo - 1e-6), name
+    assert np.all(np.asarray(q) <= hi + 1e-6), name
+    for c in gtype.contacts:
+      r = resolve_contact(model, c)
+      assert np.linalg.norm(r.normal) == pytest.approx(1.0), (name, c)
+  # Side contacts sit on that face of the link.
+  from wuji_mjlab.grasp_synth.grasp_types import ContactSpec
+
+  radial = resolve_contact(model, ContactSpec(2, "middle", "radial"))
+  ulnar = resolve_contact(model, ContactSpec(2, "middle", "ulnar"))
+  assert radial.point[0] > 0 > ulnar.point[0]

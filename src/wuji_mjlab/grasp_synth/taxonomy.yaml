@@ -1,0 +1,451 @@
+# GRASP taxonomy grasp types for Wuji Hand 2, retargeted from the Dexonomy
+# Shadow-hand annotations (github.com/JYChen18/Dexonomy, assets/hand/shadow/
+# raw_anno; CC BY-NC 4.0): per type the contacts [finger (0 palm, 1 thumb ..
+# 5 pinky), link, side] and an initial hand shape: Shadow joints mapped onto
+# the Wuji MCP / abduction / PIP / DIP, then the contacting fingers fitted
+# jointly with a similarity transform of the Shadow contacts (their relative
+# geometry kept; palm contacts pin it to the palm).
+# Used as the starting template when the library has none for the type.
+# joint_bounds (regex: [lo, hi]) give a type's posture, set by hand where the
+# synthesized grasps drifted from it (palmar, parallel extension, extension
+# type, adduction grip, prismatic, small diameter thumb, adducted thumb); palmar
+# and parallel extension keep the four fingers aligned (abduction ~0), and
+# palmar presses the thumb tip against the other side of the fingers.
+1_large_diameter:
+  joint_pos: [0.512, -1.375, 1.019, 0.468, 0.47, -0.017, 0.74, 0.74, 0.49, -0.02, 0.74, 0.74, 0.47, 0.03,
+    0.74, 0.74, 0.36, 0.05, 0.74, 0.74]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [5, proximal, palmar]
+  - [0, palm, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+2_small_diameter:
+  joint_pos: [1.0, -0.4, 0.7, 0.7, 1.439, -0.2, 1.4, 1.4, 1.439, -0.1, 1.4, 1.4, 1.439, 0.08, 1.4, 1.4,
+    1.3, 0.03, 1.4, 1.4]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [5, proximal, palmar]
+  - [0, palm, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  joint_bounds:
+    right_finger[2345]_joint3: [0.8, 1.9]
+    right_finger[2345]_joint4: [0.8, 1.5]
+    right_finger[1]_joint1: [0.6, 1.2]
+    right_finger[1]_joint3: [0.2, 1.45]
+    right_finger[1]_joint4: [0.3, 1.45]
+3_medium_wrap:
+  joint_pos: [0.22, -0.918, 1.353, -0.237, 1.0, -0.09, 0.8, 0.8, 1.06, -0.1, 0.8, 0.8, 1.02, 0.08, 0.8,
+    0.8, 0.88, 0.03, 0.8, 0.8]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [5, proximal, palmar]
+  - [1, tip, palmar]
+  - [0, palm, palmar]
+4_adducted_thumb:
+  joint_pos: [-0.03, 0.41, 0.6, 0.0, 0.31, -0.33, 1.01, 1.01, 0.61, -0.26, 1.14, 1.14, 0.85, 0.17, 1.04,
+    1.04, 0.98, 0.11, 0.97, 0.97]
+  contacts:
+  - [2, tip, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, proximal, palmar]
+  - [0, palm, palmar]
+  joint_bounds:
+    right_finger[1]_joint1: [-0.18, 0.12]
+    right_finger[1]_joint2: [0.26, 0.5599999999999999]
+    right_finger[1]_joint3: [0.44999999999999996, 0.75]
+    right_finger[1]_joint4: [-0.15, 0.15]
+    right_finger[2345]_joint3: [0.6, 1.9]
+5_light_tool:
+  joint_pos: [0.395, 0.173, -0.041, -0.413, 0.6, 0.0, 1.4, 1.4, 0.6, 0.0, 1.4, 1.4, 0.6, 0.0, 1.4, 1.4,
+    0.6, 0.0, 1.4, 1.4]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [5, proximal, palmar]
+  - [1, tip, palmar]
+6_prismatic_4_finger:
+  joint_pos: [1.167, -0.143, -0.398, -0.916, 1.237, -0.628, 0.4, 0.658, 1.217, -0.554, 0.4, 0.655, 1.029,
+    -0.546, 0.4, 0.71, 0.947, -0.564, 0.4, 0.527]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, palmar]
+  - [4, tip, palmar]
+  - [5, tip, palmar]
+  - [1, tip, palmar]
+  joint_bounds:
+    right_finger[2345]_joint1: [0.5, 1.4]
+    right_finger[2345]_joint3: [0.4, 1.6]
+7_prismatic_3_finger:
+  joint_pos: [0.296, -1.375, 1.393, -0.916, 1.4, -0.628, 0.4, -0.038, 1.4, -0.313, 0.451, -0.194, 1.18,
+    -0.048, 0.766, -0.103, 1.439, -0.28, 1.5, 1.439]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, palmar]
+  - [4, tip, palmar]
+  - [1, tip, palmar]
+  joint_bounds:
+    right_finger[234]_joint1: [0.5, 1.4]
+    right_finger[234]_joint3: [0.4, 1.6]
+    right_finger[5]_joint3: [1.0, 1.9]
+8_prismatic_2_finger:
+  joint_pos: [1.167, -0.074, -0.397, -0.916, 1.134, -0.628, 0.4, 0.667, 1.163, -0.586, 0.4, 0.779, 1.439,
+    -0.13, 1.5, 1.439, 1.439, -0.28, 1.5, 1.439]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, palmar]
+  - [1, tip, palmar]
+  joint_bounds:
+    right_finger[23]_joint1: [0.5, 1.4]
+    right_finger[23]_joint3: [0.4, 1.6]
+    right_finger[45]_joint3: [1.0, 1.9]
+    right_finger[45]_joint1: [0.8, 1.44]
+9_palmar_pinch:
+  joint_pos: [0.491, -1.285, 0.975, 0.312, 1.26, 0.09, 0.33, 0.33, 0.29, -0.06, 0.7, 0.7, 0.29, 0.08,
+    0.79, 0.79, 0.47, 0.12, 0.68, 0.67]
+  contacts:
+  - [2, tip, palmar]
+  - [1, tip, palmar]
+10_power_disk:
+  joint_pos: [0.785, -1.322, 0.902, 1.418, 0.87, -0.35, 1.02, 1.02, 0.76, -0.01, 1.02, 1.02, 0.75, -0.25,
+    1.02, 1.02, 0.87, -0.35, 1.02, 1.02]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+11_power_sphere:
+  joint_pos: [0.681, -1.312, 1.237, -0.916, 0.929, -0.628, 1.453, 0.141, 1.02, -0.01, 0.55, 0.55, 1.0,
+    -0.25, 0.55, 0.55, 0.823, 0.628, 1.346, 0.299]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+12_precision_disk:
+  joint_pos: [0.197, -0.501, 0.333, 1.151, 0.03, -0.23, 0.75, 0.75, 0.03, 0.01, 0.75, 0.75, 0.0, -0.17,
+    0.8, 0.8, -0.01, -0.32, 0.86, 0.86]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, palmar]
+  - [4, tip, palmar]
+  - [5, tip, radial]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+13_precision_sphere:
+  joint_pos: [1.167, -0.97, 0.524, -0.166, 1.439, 0.405, -0.421, 0.318, 0.851, 0.542, 0.564, -0.013, 0.61,
+    0.624, 0.916, -0.298, 1.369, 0.628, -0.89, 1.439]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, palmar]
+  - [4, tip, palmar]
+  - [5, tip, radial]
+  - [1, tip, palmar]
+14_tripod:
+  joint_pos: [0.322, -0.564, 0.912, -0.507, 0.488, -0.219, 0.596, 0.482, 0.803, -0.006, 0.633, 0.706,
+    1.4, -0.1, 1.4, 1.4, 1.4, -0.35, 1.4, 1.4]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, radial]
+  - [1, tip, palmar]
+15_fixed_hook:
+  joint_pos: [-0.585, -0.594, 0.222, 0.397, 1.39, -0.09, 0.99, 0.99, 1.439, -0.1, 0.98, 0.98, 1.34, 0.08,
+    1.01, 1.01, 1.19, 0.03, 1.04, 1.04]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [5, proximal, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+16_lateral:
+  joint_pos: [0.119, -0.225, 1.095, -0.536, 1.04, -0.146, 1.3, 1.17, 1.439, 0.03, 1.34, 1.34, 1.439, -0.1,
+    1.35, 1.35, 1.439, -0.25, 1.36, 1.36]
+  contacts:
+  - [2, middle, radial]
+  - [1, tip, palmar]
+17_index_finger_extension:
+  joint_pos: [-0.154, -0.161, 0.48, 0.695, 0.181, 0.165, 0.409, 0.105, 0.61, 0.14, 1.14, 1.14, 0.85, -0.2,
+    1.04, 1.04, 0.98, -0.16, 0.97, 0.97]
+  contacts:
+  - [2, tip, radial]
+  - [2, middle, radial]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, proximal, palmar]
+  - [0, palm, palmar]
+  - [1, tip, palmar]
+18_extension_type:
+  joint_pos: [0.871, -1.139, 0.8, 1.098, 0.16, -0.12, 0.41, 0.41, 0.1, -0.01, 0.48, 0.48, 0.12, -0.1,
+    0.48, 0.48, 0.13, -0.17, 0.46, 0.46]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, palmar]
+  - [4, tip, palmar]
+  - [5, tip, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+  joint_bounds:
+    right_finger[2345]_joint1: [-0.2, 0.5]
+    right_finger[2345]_joint3: [0.1, 0.8]
+    right_finger[2345]_joint4: [0.1, 0.8]
+19_distal:
+  joint_pos: [0.25, -0.266, -0.916, 1.371, -0.1, -0.27, 0.77, 0.77, 1.193, 0.628, 1.38, 1.38, 1.31, -0.27,
+    1.39, 1.39, 1.28, -0.28, 1.41, 1.41]
+  contacts:
+  - [2, middle, palmar]
+  - [3, tip, palmar]
+  - [3, proximal, radial]
+  - [4, tip, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, proximal, palmar]
+  - [1, middle, palmar]
+20_writing_tripod:
+  joint_pos: [0.288, -0.962, 1.439, 0.555, 1.047, 0.351, -0.214, 0.334, 1.439, 0.628, 1.937, 1.07, 1.439,
+    -0.29, 1.57, 1.439, 1.439, -0.35, 1.57, 1.439]
+  contacts:
+  - [2, tip, palmar]
+  - [3, middle, radial]
+  - [1, tip, palmar]
+  - [0, palm, palmar]
+21_tripod_variation:
+  joint_pos: [0.344, -0.235, 0.573, 1.315, 1.085, 0.09, 1.937, 0.879, 1.161, 0.628, 1.937, 0.749, 1.439,
+    0.628, 1.937, 1.439, 1.439, -0.17, 1.5, 1.439]
+  contacts:
+  - [2, tip, ulnar]
+  - [3, tip, radial]
+  - [4, tip, radial]
+  - [1, tip, palmar]
+  - [0, palm, palmar]
+22_parallel_extension:
+  joint_pos: [0.951, -1.164, 0.041, 1.153, 1.3, 0.0, 0.1, 0.1, 1.3, 0.0, 0.1, 0.1, 1.3, 0.0, 0.1, 0.1,
+    1.3, 0.0, 0.1, 0.1]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+  joint_bounds:
+    right_finger[2345]_joint1: &id001 [1.15, 1.44]
+    right_finger[2345]_joint2: &id002 [-0.12, 0.12]
+    right_finger[2345]_joint3: &id003 [-0.1, 0.3]
+    right_finger[2345]_joint4: &id004 [-0.1, 0.3]
+23_adduction_grip:
+  joint_pos: [0.232, -0.973, 0.684, 0.931, 0.0, -0.507, 0.5, 1.439, 0.0, -0.386, 0.5, 1.439, 0.66, -0.07,
+    1.32, 1.32, 1.11, -0.08, 1.3, 1.3]
+  contacts:
+  - [2, tip, ulnar]
+  - [2, middle, ulnar]
+  - [3, tip, radial]
+  - [3, middle, radial]
+  joint_bounds:
+    right_finger[23]_joint1: [0.0, 0.8]
+    right_finger[23]_joint3: [0.5, 1.6]
+    right_finger[23]_joint4: [0.5, 1.5]
+    right_finger[45]_joint3: [0.8, 1.9]
+    right_finger[45]_joint4: [0.8, 1.5]
+24_tip_pinch:
+  joint_pos: [1.167, -0.012, 0.367, -0.916, 0.042, 0.628, 1.163, 0.217, 0.29, -0.06, 0.7, 0.7, 0.29, 0.08,
+    0.79, 0.79, 0.43, 0.12, 0.68, 0.67]
+  contacts:
+  - [2, tip, palmar]
+  - [1, tip, palmar]
+25_lateral_tripod:
+  joint_pos: [0.03, -0.528, 1.404, -0.142, 0.74, 0.0, 0.99, 0.99, 1.306, 0.082, 1.258, 1.26, 1.42, 0.0,
+    1.39, 1.39, 1.439, 0.0, 1.57, 1.439]
+  contacts:
+  - [2, tip, palmar]
+  - [3, middle, radial]
+  - [1, tip, palmar]
+26_sphere_4_finger:
+  joint_pos: [0.94, -1.147, -0.24, 1.36, 0.811, -0.28, 0.779, 0.901, 1.09, 0.07, 0.55, 0.55, 1.175, -0.072,
+    0.317, 1.066, 1.439, 0.004, 0.867, 1.439]
+  contacts:
+  - [2, tip, ulnar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, radial]
+  - [4, middle, radial]
+  - [4, proximal, radial]
+  - [5, tip, radial]
+  - [5, middle, radial]
+  - [5, proximal, radial]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+27_quadpod:
+  joint_pos: [0.231, -1.017, 1.023, -0.091, 0.666, -0.628, 0.929, -0.209, 1.418, -0.411, -0.699, 0.594,
+    1.117, -0.238, 0.602, 0.38, 1.32, -0.35, 1.28, 1.28]
+  contacts:
+  - [2, tip, palmar]
+  - [3, tip, palmar]
+  - [4, tip, radial]
+  - [1, tip, palmar]
+28_sphere_3_finger:
+  joint_pos: [0.145, -1.119, 0.871, 0.285, 0.87, -0.35, 0.64, 0.64, 1.2, 0.3, 0.55, 0.55, 1.439, 0.06,
+    0.846, 1.439, 1.34, -0.02, 1.37, 1.37]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, radial]
+  - [4, middle, radial]
+  - [4, proximal, radial]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+29_stick:
+  joint_pos: [0.108, -0.195, 0.43, 0.83, 0.838, 0.462, 0.86, 0.86, 1.33, 0.08, 1.14, 1.14, 1.439, -0.2,
+    1.01, 1.01, 1.439, -0.14, 1.04, 1.04]
+  contacts:
+  - [2, proximal, radial]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [5, proximal, palmar]
+  - [1, tip, palmar]
+  - [0, palm, palmar]
+30_palmar:
+  joint_pos: [0.8, -0.3, 0.3, 0.2, 1.3, 0.0, 0.1, 0.1, 1.3, 0.0, 0.1, 0.1, 1.3, 0.0, 0.1, 0.1, 1.3, 0.0,
+    0.1, 0.1]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, tip, palmar]
+  - [3, middle, palmar]
+  - [3, proximal, palmar]
+  - [4, tip, palmar]
+  - [4, middle, palmar]
+  - [4, proximal, palmar]
+  - [5, tip, palmar]
+  - [5, middle, palmar]
+  - [5, proximal, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+  joint_bounds:
+    right_finger[2345]_joint1: *id001
+    right_finger[2345]_joint2: *id002
+    right_finger[2345]_joint3: *id003
+    right_finger[2345]_joint4: *id004
+31_ring:
+  joint_pos: [0.545, -1.375, 1.087, 0.15, 0.9, 0.0, 0.64, 0.64, 0.9, 0.0, 0.23, 0.23, 0.38, 0.0, 0.53,
+    0.53, 0.37, -0.15, 0.42, 0.42]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [2, proximal, palmar]
+  - [3, proximal, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]
+  - [0, palm, palmar]
+32_ventral:
+  joint_pos: [1.167, 0.189, 0.089, -0.567, 0.655, 0.228, -0.556, 0.53, 1.052, -0.183, 1.937, 0.399, 1.297,
+    -0.315, 1.937, 0.504, 1.439, 0.238, 1.937, 0.296]
+  contacts:
+  - [2, middle, radial]
+  - [3, tip, palmar]
+  - [4, tip, palmar]
+  - [5, tip, palmar]
+  - [0, palm, palmar]
+  - [1, tip, palmar]
+33_inferior_pincer:
+  joint_pos: [0.551, -1.177, 1.295, 0.009, 1.21, 0.03, 0.35, 0.35, 0.53, 0.02, 0.77, 0.77, 0.25, -0.0,
+    0.52, 0.52, 0.38, -0.03, 0.41, 0.41]
+  contacts:
+  - [2, tip, palmar]
+  - [2, middle, palmar]
+  - [1, tip, palmar]
+  - [1, middle, palmar]

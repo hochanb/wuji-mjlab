@@ -202,6 +202,8 @@ class _GraspCtx:
   finger: torch.Tensor  # (C,) 1..5
   fingers: torch.Tensor  # (F,) grasping fingers
   active_joint: torch.Tensor  # (20,) joints of grasping fingers
+  joint_lo: torch.Tensor | None = None  # (20,) the type's bounds within the
+  joint_hi: torch.Tensor | None = None  # soft limits
   mask: torch.Tensor | None = None
 
   @property
@@ -419,7 +421,19 @@ class GraspSynthesizer:
       finger=torch.tensor([r.finger for r in resolved], device=dev),
       fingers=fingers,
       active_joint=torch.isin(self.joint_finger, fingers),
+      **self._type_bounds(gtype),
     )
+
+  def _type_bounds(self, gtype: GraspType | None) -> dict[str, torch.Tensor]:
+    """The soft limits narrowed by the grasp type's joint bounds."""
+    lo, hi = self.soft_range[:, 0].cpu().numpy(), self.soft_range[:, 1].cpu().numpy()
+    if gtype is not None:
+      lo, hi = gtype.bounds(self.joint_names, lo, hi)
+    dev = self.cfg.device
+    return {
+      "joint_lo": torch.tensor(lo, dtype=torch.float32, device=dev),
+      "joint_hi": torch.tensor(hi, dtype=torch.float32, device=dev),
+    }
 
   # Kinematics on the current sim state.
 
@@ -488,6 +502,8 @@ class GraspSynthesizer:
     self.gravity[:] = 0.0
     self.margin[:] = cfg.contact_margin
     self.gap[:] = 0.0
+    lo, hi = ctx.joint_lo, ctx.joint_hi
+    q0 = torch.maximum(torch.minimum(q0, hi), lo)
     data.qpos[:, :NUM_JOINTS] = q0
     data.qvel[:] = 0.0
     data.xfrc_applied[:] = 0.0
@@ -514,11 +530,9 @@ class GraspSynthesizer:
       tau = self._joint_torque(p_hand, spring, ctx.chain)
       tau = tau + self._joint_moment(align, ctx.chain)
       tau = tau - cfg.joint_damping * data.qvel[:, :NUM_JOINTS]
-      # No push past the soft limits (grasps must stay within them).
+      # No push past the soft limits / type bounds (grasps stay within).
       qpos = data.qpos[:, :NUM_JOINTS]
-      out = ((qpos >= self.soft_range[:, 1]) & (tau > 0)) | (
-        (qpos <= self.soft_range[:, 0]) & (tau < 0)
-      )
+      out = ((qpos >= hi) & (tau > 0)) | ((qpos <= lo) & (tau < 0))
       tau = torch.where(out, 0.0, tau)
       data.qfrc_applied[:, :NUM_JOINTS] = torch.where(active, tau, 0.0)
       sim.step()
@@ -531,7 +545,7 @@ class GraspSynthesizer:
     # position actuators: otherwise the curling torque's reaction would open
     # the proximal joints and pull the finger off the object.
     curl = active & self.flex_joint
-    stop = self.soft_range[:, 1] - 0.05
+    stop = hi - 0.05
     hold = data.qpos[:, :NUM_JOINTS].clone()
     for _ in range(cfg.close_steps):
       self._pin_object(pose)
@@ -572,7 +586,7 @@ class GraspSynthesizer:
 
     p_hand, _ = self._contact_frames(ctx)
     near, normal, sdist = self._object_surface(p_hand, pose)
-    within = (q >= self.soft_range[:, 0]) & (q <= self.soft_range[:, 1])
+    within = (q >= lo - 1e-3) & (q <= hi + 1e-3)
     finger_within = torch.ones(nw, 6, dtype=torch.bool, device=dev)
     for f in range(1, 6):
       finger_within[:, f] = within[:, self.joint_finger == f].all(1)
