@@ -294,28 +294,16 @@ class GraspSynthesizer:
     return spec.compile()
 
   def _setup(self, obj: GraspObject, nworld: int) -> None:
-    key = (id(obj), nworld)
-    if self._sim_key == key:
+    """Model and object data for ``obj``; ``nworld`` is the largest batch.
+    Simulations are made per batch size on demand (``_use``)."""
+    self._max_world = nworld
+    if self._sim_key == id(obj):
+      self._use(nworld)
       return
     cfg, dev = self.cfg, self.cfg.device
     model = self._build_model(obj)
-    self.model, self.obj, self.nworld = model, obj, nworld
-    self.sim = Simulation(
-      num_envs=nworld,
-      cfg=SimulationCfg(
-        nconmax=cfg.nconmax,
-        njmax=cfg.njmax,
-        mujoco=MujocoCfg(
-          timestep=cfg.timestep,
-          cone=cfg.cone,
-          impratio=cfg.impratio,
-          iterations=cfg.solver_iterations,
-          ls_iterations=cfg.ls_iterations,
-        ),
-      ),
-      model=model,
-      device=dev,
-    )
+    self.model, self.obj = model, obj
+    self._sims: dict[int, tuple] = {}
     self.surface = SurfaceQuery(obj, dev)
     self.obj_com = torch.tensor(obj.com, device=dev).float()
 
@@ -363,15 +351,44 @@ class GraspSynthesizer:
         self.geom_finger[g] = int(m.group(1))
       elif body == PALM_BODY:
         self.geom_finger[g] = 0
-    # Shared (not per-world) model fields, switched between the phases.
-    self.margin = wp.to_torch(self.sim.wp_model.geom_margin)
-    self.gap = wp.to_torch(self.sim.wp_model.geom_gap)
-    self.gravity = wp.to_torch(self.sim.wp_model.opt.gravity)
+    self._use(nworld)
     self.margin0, self.gap0 = self.margin.clone(), self.gap.clone()
     q = torch.tensor(cfg.hand_quat_w, dtype=torch.float32)
     g = _quat_to_mat(q / q.norm()).T @ torch.tensor([0.0, 0.0, -cfg.gravity])
     self.gravity_palm = g.to(dev)
-    self._sim_key = key
+    self._sim_key = id(obj)
+
+  def _use(self, nworld: int) -> None:
+    """Switch to the simulation with ``nworld`` worlds (made on first use):
+    a step costs about the same for a few worlds as for a few hundred, but
+    far more for thousands, so small batches get small simulations."""
+    if nworld not in self._sims:
+      cfg = self.cfg
+      sim = Simulation(
+        num_envs=nworld,
+        cfg=SimulationCfg(
+          nconmax=cfg.nconmax,
+          njmax=cfg.njmax,
+          mujoco=MujocoCfg(
+            timestep=cfg.timestep,
+            cone=cfg.cone,
+            impratio=cfg.impratio,
+            iterations=cfg.solver_iterations,
+            ls_iterations=cfg.ls_iterations,
+          ),
+        ),
+        model=self.model,
+        device=cfg.device,
+      )
+      # Shared (not per-world) model fields, switched between the phases.
+      self._sims[nworld] = (
+        sim,
+        wp.to_torch(sim.wp_model.geom_margin),
+        wp.to_torch(sim.wp_model.geom_gap),
+        wp.to_torch(sim.wp_model.opt.gravity),
+      )
+    self.sim, self.margin, self.gap, self.gravity = self._sims[nworld]
+    self.nworld = nworld
 
   def _init_joint_pos(self) -> torch.Tensor:
     spec = self.cfg.init_joint_pos
@@ -655,9 +672,12 @@ class GraspSynthesizer:
     )  # fmt: skip
 
   def _chunked(self, fn, pose, q0, *args):
-    """Run ``fn(pose, q0, *args) -> dict`` over chunks of nworld rows; a
-    per-world context among ``args`` is chunked too."""
+    """Run ``fn(pose, q0, *args) -> dict`` over chunks of rows, on the
+    smallest simulation that fits them (64 / 256 / 1024 / the largest
+    batch); a per-world context among ``args`` is chunked too."""
     n, out = len(pose), []
+    size = next((s for s in (64, 256, 1024) if s >= n), self._max_world)
+    self._use(min(size, self._max_world))
     for s in range(0, n, self.nworld):
       e = min(n, s + self.nworld)
       pad = self.nworld - (e - s)

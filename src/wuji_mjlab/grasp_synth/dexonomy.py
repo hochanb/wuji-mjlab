@@ -71,7 +71,7 @@ class DexonomyCfg:
   ``wrist_quat_w``)."""
 
   # Global alignment.
-  align_samples: int = 4096
+  align_samples: int = 16384
   """Hand poses sampled per round."""
   align_steps: int = 150
   align_lr_pos: float = 0.002  # m
@@ -90,6 +90,9 @@ class DexonomyCfg:
   """Grasps sent to refinement differ by at least this much (object pose)."""
   max_rounds: int = 10
   """Alignment rounds at most (each ``align_samples``)."""
+  stall_rounds: int = 3
+  """A grasp type stops after this many rounds in a row without a candidate
+  for verification (its templates do not fit the object)."""
   max_align_residual: float = 0.2
   """Balance residual allowed after alignment (refinement still has to reach
   the synth ``max_wrench_residual``)."""
@@ -184,8 +187,9 @@ class DexonomySynthesizer:
     save_templates(self.library, path)
 
   def _grow(self, key: str, source: GraspTemplate, q, pose) -> GraspTemplate | None:
-    """Template from a validated grasp, if it touches with the source's
-    fingers and differs from the type's templates; added to the library."""
+    """Template from a validated grasp, if it touches with exactly the
+    source's fingers (others' contacts dropped) and differs from the type's
+    templates; added to the library."""
     cfg = self.cfg
     items = self.library.setdefault(key, [])
     if len(items) >= cfg.max_templates:
@@ -194,8 +198,13 @@ class DexonomySynthesizer:
       self.synth.model, key, q.cpu().numpy(), pose.cpu().numpy(),
       self.synth.cfg.touch_dist,
     )  # fmt: skip
-    if not {c.finger for c in source.contacts} <= {c.finger for c in tpl.contacts}:
+    # Same fingers as the source: a finger that only happens to touch (e.g.
+    # an adducted thumb) is not made a grasping finger.
+    fingers = {c.finger for c in source.contacts}
+    contacts = tuple(c for c in tpl.contacts if c.finger in fingers)
+    if {c.finger for c in contacts} != fingers:
       return None
+    tpl = GraspTemplate(tpl.name, tpl.joint_pos, contacts)
     joints = np.asarray(tpl.joint_pos)
     for other in items:
       if np.abs(joints - np.asarray(other.joint_pos)).max() < cfg.template_joint_gap:
@@ -217,17 +226,16 @@ class DexonomySynthesizer:
     p = pos + torch.einsum("cij,cj->ci", rot, ctx.point)
     return p, torch.einsum("cij,cj->ci", rot, ctx.normal)
 
-  def _align(self, lib, gen):
-    """Global alignment of ``align_samples`` hand poses spread over the
-    templates in ``lib`` (padded contacts), object frame, x_obj = R x_wrist + t.
-    Returns the template of each sample, R (N, 3, 3), t (N, 3), per-contact
-    distance to the surface target and normal angle (N, C), and the nearest
-    surface points / normals."""
+  def _align(self, lib, tpl, gen):
+    """Global alignment of one hand pose per entry of ``tpl`` (template
+    indices into ``lib``, padded contacts), object frame, x_obj = R x_wrist
+    + t. Returns R (N, 3, 3), t (N, 3), per-contact distance to the surface
+    target and normal angle (N, C), and the nearest surface points /
+    normals."""
     cfg, dev = self.cfg, self.synth.cfg.device
-    n = cfg.align_samples
+    n = len(tpl)
     surface = self.synth.surface
     pts, nrm = self._surface_pts, self._surface_nrm
-    tpl = torch.randint(len(lib["q"]), (n,), device=dev, generator=gen)
     p_h, n_h, mask = lib["p"][tpl], lib["n"][tpl], lib["mask"][tpl]
     i = torch.multinomial(mask.float(), 1, generator=gen)[:, 0]
     rows = torch.arange(n, device=dev)
@@ -265,7 +273,7 @@ class DexonomySynthesizer:
       cos = -(nh * normal).sum(-1).clamp(-1.0, 1.0)
       dist = err_p.sqrt().masked_fill(~mask, 0.0)
       angle = torch.acos(cos).masked_fill(~mask, 0.0)
-      return tpl, r.detach(), (t0 + dt).detach(), dist, angle, near, normal
+      return r.detach(), (t0 + dt).detach(), dist, angle, near, normal
 
   def _batch_ctx(self, prepared) -> _GraspCtx:
     """The templates' contexts stacked, one row per template, contacts
@@ -389,20 +397,38 @@ class DexonomySynthesizer:
     templates are used), a ``GraspTemplate`` or a list of them; with
     ``hand_q`` (20 joint angles) the hand shape is given and the contacts are
     the grasp type's pads."""
+    return self._generate(obj, [(self._templates(grasp_type, hand_q), k)])[0]
+
+  def generate_many(
+    self, obj: GraspObject, grasp_types: Sequence[str] | dict[str, int], k: int = 0
+  ) -> dict[str, DexonomyResult]:
+    """Several library grasp types of one object at once (``{type: k}`` or a
+    list with one ``k``): every round aligns and verifies all of them in the
+    same batches, so it takes about as long as the slowest type alone."""
+    want = (
+      grasp_types if isinstance(grasp_types, dict) else dict.fromkeys(grasp_types, k)
+    )
+    groups = [(self._templates(name, None), n) for name, n in want.items()]
+    return dict(zip(want, self._generate(obj, groups), strict=True))
+
+  def _generate(self, obj: GraspObject, groups) -> list[DexonomyResult]:
+    """``groups``: (templates, k) per grasp type, run together. Each group
+    keeps its own budget, found grasps, library key and stats."""
     cfg, scfg = self.cfg, self.synth.cfg
     syn, dev = self.synth, scfg.device
-    budget = k * scfg.attempts_per_sample
-    syn._setup(obj, min(scfg.num_worlds, max(cfg.align_samples, budget)))
-    templates = self._templates(grasp_type, hand_q)
-    key = templates[0].name
+    budget = [k * scfg.attempts_per_sample for _, k in groups]
+    syn._setup(obj, min(scfg.num_worlds, max(cfg.align_samples, sum(budget))))
+    keys = [templates[0].name for templates, _ in groups]
 
     def prepare(tpl: GraspTemplate):
       ctx = self._ctx(tpl)
       q = torch.tensor(tpl.joint_pos, dtype=torch.float32, device=dev)
       return (ctx, q, *self._template(q, ctx))
 
-    prepared = [prepare(tpl) for tpl in templates]
-    templates_used = list(templates)  # parallel to prepared
+    # All templates of all groups; group_of[i] is the group of template i.
+    templates_used = [tpl for templates, _ in groups for tpl in templates]
+    group_of = [g for g, (templates, _) in enumerate(groups) for _ in templates]
+    prepared = [prepare(tpl) for tpl in templates_used]
     merged = trimesh.util.concatenate(obj.collision_parts)
     pts, face = trimesh.sample.sample_surface(merged, 20000, seed=scfg.seed)
     self._surface_pts = torch.tensor(pts, dtype=torch.float32, device=dev)
@@ -412,25 +438,60 @@ class DexonomySynthesizer:
     gen = torch.Generator(device=dev).manual_seed(scfg.seed)
     com = torch.tensor(obj.com, dtype=torch.float32, device=dev)
 
-    found: list[tuple] = []
-    attempts = 0
-    stats = dict.fromkeys(
-      ("sampled", "aligned", "no_pen", "balanced", "distinct", "verified",
-       "refined_no_pen", "touch", "limits", "wrench", "hold", "new_templates"), 0,
-    )  # fmt: skip
+    found: list[list[tuple]] = [[] for _ in groups]
+    attempts = [0] * len(groups)
+    stalled = [0] * len(groups)
+    stats = [
+      dict.fromkeys(
+        (
+          "sampled",
+          "aligned",
+          "no_pen",
+          "balanced",
+          "distinct",
+          "verified",
+          "refined_no_pen",
+          "touch",
+          "limits",
+          "wrench",
+          "hold",
+          "new_templates",
+        ),
+        0,
+      )  # fmt: skip
+      for _ in groups
+    ]
     rounds = 0
-    while len(found) < k and attempts < budget and rounds < cfg.max_rounds:
+    while rounds < cfg.max_rounds:
+      active = [
+        g
+        for g, (_, k) in enumerate(groups)
+        if len(found[g]) < k
+        and attempts[g] < budget[g]
+        and stalled[g] < cfg.stall_rounds
+      ]
+      if not active:
+        break
       rounds += 1
-      need = k - len(found)
-      # 1. Global alignment in the object frame, all templates at once.
+      # 1. Global alignment in the object frame: align_samples per active
+      # group, spread over its templates (alignment is cheap next to
+      # verification, so groups do not share them).
       lib = self._library_tensors(prepared)
-      owner, r, t, dist, angle, near, normal = self._align(lib, gen)
+      group_t = torch.tensor(group_of, device=dev)
+      per_group = cfg.align_samples
+      owner = torch.cat([
+        torch.nonzero(group_t == g).flatten()[
+          torch.randint(int((group_t == g).sum()), (per_group,), device=dev, generator=gen)
+        ]
+        for g in active
+      ])  # fmt: skip
+      r, t, dist, angle, near, normal = self._align(lib, owner, gen)
       mask = lib["mask"][owner]
-      stats["sampled"] += len(r)
       count = mask.sum(1)
       rms = (dist.pow(2).sum(1) / count).sqrt()
       ok = (rms <= cfg.max_align_rms) & (angle.sum(1) / count <= cfg.max_align_angle)
-      stats["aligned"] += int(ok.sum())
+      self._count(stats, group_t[owner], "sampled", torch.ones_like(ok))
+      self._count(stats, group_t[owner], "aligned", ok)
       idx = torch.nonzero(ok).flatten()
       poses = residuals = None
       if len(idx):
@@ -444,7 +505,9 @@ class DexonomySynthesizer:
           pen["finger"] <= cfg.max_finger_penetration
         )
         idx, pose = idx[clear], pose[clear]
-        stats["no_pen"] += len(idx)
+        self._count(
+          stats, group_t[owner[idx]], "no_pen", torch.ones_like(idx, dtype=torch.bool)
+        )
       if len(idx):
         # Balance in the object frame; gravity there depends on the sample.
         g_obj = torch.einsum("nij,j->ni", r[idx], syn.gravity_palm)
@@ -458,53 +521,75 @@ class DexonomySynthesizer:
           scfg.friction, min_share=scfg.min_force_share, target=goal,
         )  # fmt: skip
         keep = residual <= cfg.max_align_residual
-        stats["balanced"] += int(keep.sum())
         poses, residuals, owner = pose[keep], residual[keep], owner[idx][keep]
-      limit = min(budget - attempts, need * scfg.verify_oversample)
-      if poses is not None and len(poses):
-        idx = self._distinct(poses, residuals, found, limit)
-      else:
-        idx = torch.zeros(0, dtype=torch.long, device=dev)
-      stats["distinct"] += len(idx)
-      attempts += len(idx)
+        self._count(
+          stats, group_t[owner], "balanced", torch.ones_like(owner, dtype=torch.bool)
+        )
+      # Per group: distinct poses, up to its share of the verify batch.
+      chosen = []
+      for g in active:
+        need = groups[g][1] - len(found[g])
+        limit = min(budget[g] - attempts[g], need * scfg.verify_oversample)
+        rows = (
+          torch.nonzero(group_t[owner] == g).flatten()
+          if poses is not None
+          else torch.zeros(0, dtype=torch.long, device=dev)
+        )
+        if len(rows):
+          rows = rows[self._distinct(poses[rows], residuals[rows], found[g], limit)]
+        stats[g]["distinct"] += len(rows)
+        attempts[g] += len(rows)
+        stalled[g] = 0 if len(rows) else stalled[g] + 1
+        chosen.append(rows)
+      idx = torch.cat(chosen)
       if len(idx) == 0:
         continue
 
-      # 2. Local refinement and validation (wrist frame), all at once.
+      # 2. Local refinement and validation (wrist frame), all groups at once.
       tpl = owner[idx]
       ctx = self._batch_ctx(prepared).rows(tpl)
       res = syn._chunked(syn._verify, poses[idx], lib["q"][tpl], ctx)
-      stats["verified"] += len(idx)
-      stats["refined_no_pen"] += int(res["no_pen"].sum())
+      gidx = group_t[tpl]
+      self._count(stats, gidx, "verified", torch.ones_like(res["ok"]))
       for s in ("touch", "limits"):
-        stats[s] += int(res[s].sum())
-      stats["wrench"] += int(res["balanced"].sum())
-      stats["hold"] += int(res["ok"].sum())
+        self._count(stats, gidx, s, res[s])
+      self._count(stats, gidx, "refined_no_pen", res["no_pen"])
+      self._count(stats, gidx, "wrench", res["balanced"])
+      self._count(stats, gidx, "hold", res["ok"])
       for w in torch.nonzero(res["ok"]).flatten().tolist():
-        pose = poses[idx[w]]
-        if len(found) < k:
-          found.append((pose, res["q"][w], res["q_target"][w], res["residual"][w]))
+        g, pose = int(gidx[w]), poses[idx[w]]
+        if len(found[g]) < groups[g][1]:
+          found[g].append((pose, res["q"][w], res["q_target"][w], res["residual"][w]))
         if cfg.grow_templates:
-          new = self._grow(key, templates_used[int(tpl[w])], res["q"][w], pose)
+          new = self._grow(keys[g], templates_used[int(tpl[w])], res["q"][w], pose)
           if new is not None:
             templates_used.append(new)
+            group_of.append(g)
             prepared.append(prepare(new))
-            stats["new_templates"] += 1
+            stats[g]["new_templates"] += 1
 
-    def stack(i, width):
-      if not found:
-        return np.zeros((0, *width), dtype=np.float32)
-      return torch.stack([f[i] for f in found]).cpu().numpy().reshape(-1, *width)
+    def result(g):
+      def stack(i, width):
+        if not found[g]:
+          return np.zeros((0, *width), dtype=np.float32)
+        return torch.stack([f[i] for f in found[g]]).cpu().numpy().reshape(-1, *width)
 
-    return DexonomyResult(
-      joint_names=syn.joint_names,
-      object_pose=stack(0, (7,)),
-      joint_pos=stack(1, (NUM_JOINTS,)),
-      joint_target=stack(2, (NUM_JOINTS,)),
-      wrench_residual=stack(3, ()),
-      attempts=int(attempts),
-      stats=stats,
-    )
+      return DexonomyResult(
+        joint_names=syn.joint_names,
+        object_pose=stack(0, (7,)),
+        joint_pos=stack(1, (NUM_JOINTS,)),
+        joint_target=stack(2, (NUM_JOINTS,)),
+        wrench_residual=stack(3, ()),
+        attempts=int(attempts[g]),
+        stats=stats[g],
+      )
+
+    return [result(g) for g in range(len(groups))]
+
+  @staticmethod
+  def _count(stats, group, key, mask) -> None:
+    for g, n in zip(*torch.unique(group[mask], return_counts=True), strict=True):
+      stats[int(g)][key] += int(n)
 
   def _distinct(self, pose, residual, found, limit: int) -> torch.Tensor:
     """Greedy, best residual first: indices of poses that differ from every

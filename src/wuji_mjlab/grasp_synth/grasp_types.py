@@ -32,6 +32,10 @@ Link = Literal["tip", "middle", "proximal", "palm"]
 # Palm contact: where a power grasp presses the object, palm frame (x, z) [m];
 # the point is found on the palm surface along the palm normal (+y).
 PALM_CONTACT_XZ = (-0.005, -0.045)
+# Thumb joints (joint1..4) of the adducted thumb: alongside the index's
+# radial side in the palm plane, ~1 mm off the index / palm. Grasp types
+# without thumb contacts keep the thumb where the initial joints put it.
+ADDUCTED_THUMB_JOINT_POS = (-0.03, 0.41, 0.6, 0.0)
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,15 @@ GRASP_TYPES: dict[str, GraspType] = {
       + tuple(ContactSpec(f, "proximal") for f in range(2, 6))
       + (ContactSpec(0, "palm"),),
       "power wrap with the object against the palm",
+    ),
+    GraspType(
+      "adducted_thumb",
+      tuple(ContactSpec(f, "tip") for f in range(2, 6))
+      + tuple(ContactSpec(f, "middle") for f in range(2, 6))
+      + tuple(ContactSpec(f, "proximal") for f in range(2, 6))
+      + (ContactSpec(0, "palm"),),
+      "power wrap by the fingers against the palm, the thumb adducted beside the"
+      " index (initial thumb joints ADDUCTED_THUMB_JOINT_POS)",
     ),
   )
 }

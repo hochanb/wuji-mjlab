@@ -21,7 +21,15 @@ res = dex.generate(obj, "tripod", k=8)          # library templates of the type
 res = dex.generate(obj, "tripod", k=8, hand_q=q20)  # or a given hand shape (pads)
 res.object_pose   # (n <= 8, 7) object pose in the wrist frame, pos + wxyz
 res.joint_pos     # (n, 20) finger joints; res.joint_target: squeeze targets
+many = dex.generate_many(obj, ["pinch", "tripod", "power_palm"], k=16)  # {type: result}
 ```
+
+`generate_many` runs several library grasp types of one object in the same
+alignment and verification batches. Each type keeps its own budget and
+results. It takes about as long as the slowest type alone. A type stops
+after `stall_rounds` rounds without a candidate, i.e. when its templates do
+not fit the object. Verification runs on a simulation sized to the batch
+(64 / 256 / 1024 worlds), since a step on thousands of worlds costs far more.
 
 - **Input:** the wrist orientation in the world. Gravity is always world -z,
   so the orientation only sets the gravity direction relative to the hand.

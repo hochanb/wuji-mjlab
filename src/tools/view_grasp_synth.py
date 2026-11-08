@@ -228,7 +228,15 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
         batched_colors=(230, 150, 40),
         opacity=0.85,
       )
-    handles += list(meshes.values())
+      # The object's local frame (mesh frame): x red, y green, z blue.
+      meshes["object_axes"] = server.scene.add_batched_axes(
+        f"/{t}/object_axes",
+        batched_wxyzs=ones_q,
+        batched_positions=zeros_p,
+        axes_length=1.4 * o.radius,
+        axes_radius=0.0015,
+      )
+    handles += [h for k, h in meshes.items() if k != "object_axes"]
     groups[t] = dict(cells=cells, meshes=meshes, handles=handles)
 
   def draw(t: str) -> None:
@@ -256,6 +264,8 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
       np.broadcast_to(hand_q, oq.shape), oq
     )
     meshes["object"].batched_positions = op @ hand_rot.T + offsets
+    meshes["object_axes"].batched_wxyzs = meshes["object"].batched_wxyzs
+    meshes["object_axes"].batched_positions = meshes["object"].batched_positions
 
   gui = server.gui
   choice = gui.add_dropdown(
@@ -265,9 +275,12 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
   gravity = gui.add_checkbox("gravity (palm frame)", cfg.gravity > 0)
   speed = gui.add_slider("speed", min=0.1, max=2.0, step=0.1, initial_value=1.0)
   hold_s = gui.add_slider("hold [s]", min=0.5, max=10.0, step=0.5, initial_value=3.0)
+  axes = gui.add_checkbox("object axes (x r, y g, z b)", True)
   restart = gui.add_button("restart")
   info = gui.add_markdown("")
-  state = {"step": 0}
+  # GUI callbacks run on viser's thread: they only flag work for the loop,
+  # which owns the MjData (stepping and resetting them concurrently crashes).
+  state = {"step": 0, "show": True, "reset": False, "axes": False}
 
   def reset_all(_=None) -> None:
     state["step"] = 0
@@ -278,6 +291,8 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
     for t, grp in groups.items():
       for h in grp["handles"]:
         h.visible = t == choice.value
+      if "object_axes" in grp["meshes"]:
+        grp["meshes"]["object_axes"].visible = t == choice.value and axes.value
     reset_all()
     draw(choice.value)
 
@@ -285,17 +300,28 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
     for model in models.values():
       model.opt.gravity[:] = gravity_palm if gravity.value else 0.0
 
-  choice.on_update(show)
-  restart.on_click(reset_all)
+  choice.on_update(lambda _: state.update(show=True))
+  restart.on_click(lambda _: state.update(reset=True))
+  axes.on_update(lambda _: state.update(axes=True))
   gravity.on_update(set_gravity)
   set_gravity()
-  show()
   print(f"viser: http://127.0.0.1:{args.port}", flush=True)
 
   dt, frame = m.opt.timestep, 1.0 / 30.0
   settle = cfg.settle_steps
   while True:
     start = time.time()
+    if state["show"]:
+      state["show"] = state["reset"] = False
+      show()
+    elif state["reset"]:
+      state["reset"] = False
+      reset_all()
+    if state["axes"]:  # visibility only, the simulation keeps running
+      state["axes"] = False
+      for t, grp in groups.items():
+        if "object_axes" in grp["meshes"]:
+          grp["meshes"]["object_axes"].visible = t == choice.value and axes.value
     t = choice.value
     cells = groups[t]["cells"]
     if playing.value and cells:

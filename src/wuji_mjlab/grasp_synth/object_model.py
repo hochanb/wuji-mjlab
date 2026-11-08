@@ -53,6 +53,29 @@ class GraspObject:
   def box(cls, half_size, mass: float = 0.1) -> GraspObject:
     return cls(trimesh.creation.box(extents=2 * np.asarray(half_size)), mass)
 
+  @classmethod
+  def from_compound(cls, name: str, mass: float | None = None) -> GraspObject:
+    """A repo compound object (``compound_objects.COMPOUND_OBJECTS``): one
+    convex collision part per primitive, in the parts' frame; the mass
+    defaults to the parts' densities."""
+    from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
+      COMPOUND_OBJECTS,
+    )
+
+    parts = []
+    for part in COMPOUND_OBJECTS[name]():
+      if part.kind == "box":
+        mesh = trimesh.creation.box(extents=2 * np.asarray(part.size))
+      else:
+        radius, half_length = part.size[:2]
+        mesh = trimesh.creation.cylinder(radius, 2 * half_length, sections=32)
+      pose = trimesh.transformations.quaternion_matrix(part.quat)
+      pose[:3, 3] = part.pos
+      parts.append(mesh.apply_transform(pose))
+    if mass is None:
+      mass = sum(p.density * p.volume for p in COMPOUND_OBJECTS[name]())
+    return cls(trimesh.util.concatenate(parts), mass, parts)
+
   @property
   def com(self) -> np.ndarray:
     hull = trimesh.util.concatenate(self.collision_parts)
