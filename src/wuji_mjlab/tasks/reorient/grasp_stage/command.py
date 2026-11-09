@@ -179,7 +179,7 @@ class GraspGoalCommand(InHandReorientCommand):
     cos = (rel * target_dir).sum(-1) / rel.norm(dim=-1).clamp_min(1e-6)
     q = self.robot.data.joint_pos[:, self.finger_joint_index]
     err = (q - self.joint_goal).abs().view(self.num_envs, self.tip_weights.shape[1], -1)
-    return quat_apply_inverse(quat, offset), cos, err.amax(-1)
+    return quat_apply_inverse(quat, offset), cos, err.amax(-1), err
 
   def tip_offset_b(self) -> torch.Tensor:
     """[N, F, 3] tip reference point minus where it sits when the pad touches
@@ -193,6 +193,10 @@ class GraspGoalCommand(InHandReorientCommand):
   def joint_error(self) -> torch.Tensor:
     """[N, F] largest |q - q_goal| over each finger's joints [rad]."""
     return self._grasp_errors()[2]
+
+  def joint_errors(self) -> torch.Tensor:
+    """[N, F, J] |q - q_goal| per finger joint, base (joint 1) first [rad]."""
+    return self._grasp_errors()[3]
 
   def _pose_weights(self) -> torch.Tensor:
     return self.pose_weights

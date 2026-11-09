@@ -191,6 +191,43 @@ def test_grasp_observations_and_success_gate(stage_env):
   cmd.tip_weights[:] = saved
 
 
+def test_hand_shape_reward_weights_joints_by_importance(stage_env):
+  from wuji_mjlab.tasks.reorient.grasp_stage import mdp as gmdp
+
+  stage_env.reset()
+  stage_env.sim.forward()
+  cmd = stage_env.command_manager.get_term("reorient_command")
+  err = cmd.joint_errors()
+  assert err.shape == (2, 5, 4)
+  torch.testing.assert_close(err.amax(-1), cmd.joint_error())
+  saved = cmd.joint_weights.clone()
+  cmd.joint_weights[:] = torch.tensor([1.0, 1.0, 0.0, 1.0, 0.0])
+  imp = (1.0, 1.0, 0.5, 0.3)
+  kw = dict(scale=0.6, gate_floor=1.0)  # gate floor 1: no pose gate
+  got = gmdp.grasp_joint_proximity(stage_env, joint_importance=imp, **kw)
+  w = cmd.joint_weights.unsqueeze(-1) * torch.tensor(imp)
+  want = (torch.exp(-err / 0.6) * w).sum((1, 2)) / w.sum((1, 2))
+  torch.testing.assert_close(got, want)
+  # Without importance: the finger-max form.
+  old = gmdp.grasp_joint_proximity(stage_env, **kw)
+  per_finger = torch.exp(-cmd.joint_error() / 0.6) * cmd.joint_weights
+  torch.testing.assert_close(old, per_finger.sum(-1) / cmd.joint_weights.sum(-1))
+  # Goal = the current hand, then one index joint 0.5 rad off: at the tip it
+  # costs less than at the base.
+  q_goal = cmd.joint_goal.clone()
+  q_now = cmd.robot.data.joint_pos[:, cmd.finger_joint_index]
+  reward = {}
+  for joint in (0, 3):  # index finger joint 1 (base) and joint 4 (tip)
+    cmd.joint_goal[:] = q_now
+    cmd.joint_goal[:, 4 + joint] += 0.5
+    cmd.invalidate_grasp_errors()
+    reward[joint] = gmdp.grasp_joint_proximity(stage_env, joint_importance=imp, **kw)
+  assert torch.all(reward[3] > reward[0])
+  cmd.joint_goal[:] = q_goal
+  cmd.joint_weights[:] = saved
+  cmd.invalidate_grasp_errors()
+
+
 def test_grasp_errors_are_computed_once_per_sim_state(stage_env, monkeypatch):
   from wuji_mjlab.tasks.reorient.grasp_stage import command as command_module
 
