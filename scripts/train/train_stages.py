@@ -10,6 +10,8 @@ are validated before the first env is built.
 With ``--gpu-ids 0,1`` one worker per GPU trains a single policy (rsl_rl
 multi-GPU, like ``train_rsl_rl.py``); ``env.scene.num_envs`` is per GPU.
 The wrist is fixed at the mount unless ``--wrist`` adds the actuated wrist.
+``--resume <model.pt>`` continues a training from a checkpoint of it (the
+stages before the checkpoint's iteration are skipped; logs go to a new run).
 
 Usage:
   CUDA_VISIBLE_DEVICES=0 pixi run train-stages \\
@@ -27,6 +29,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 import wuji_mjlab.tasks  # noqa: F401
 from mjlab.envs import ManagerBasedRlEnv
@@ -58,14 +61,31 @@ def _sha256(path: Path) -> str:
   return digest.hexdigest()
 
 
+def _plain_buffers(runner) -> None:
+  """Clone module buffers made inside inference mode (the observation
+  normalisers replace their std during rollouts) into normal tensors. A later
+  ``learn`` broadcasts the parameters with ``load_state_dict`` on every GPU,
+  which cannot write into inference tensors outside inference mode."""
+  for module in vars(runner.alg).values():
+    if not isinstance(module, torch.nn.Module):
+      continue
+    for m in module.modules():
+      for name, buf in m._buffers.items():
+        if buf is not None and buf.is_inference():
+          m._buffers[name] = buf.clone()
+
+
 def _train(
   training_path: str,
   agent_cfg,
   env_overrides: list[str],
   log_dir: Path,
   wrist: bool,
+  resume: str | None = None,
 ) -> None:
-  """Run every stage on this process's device (one call per GPU worker)."""
+  """Run every stage on this process's device (one call per GPU worker).
+  With ``resume`` (a checkpoint of this training), continue from the
+  iteration after the checkpoint's, skipping the stages before it."""
   training = load_training(training_path)
   if torch.cuda.is_available():
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -78,16 +98,23 @@ def _train(
   os.environ.setdefault("MUJOCO_GL", "egl")
   configure_torch_backends()
 
-  runner, common_steps = None, 0
+  start_it = 0
+  if resume is not None:
+    start_it = (
+      int(torch.load(resume, map_location="cpu", weights_only=False)["iter"]) + 1
+    )
+  ends = np.cumsum([s.advance_after_iterations for s in training.stages])
+  runner, common_steps = None, start_it * agent_cfg.num_steps_per_env
   for i, stage in enumerate(training.stages):
+    if ends[i] <= start_it:
+      continue  # done before the checkpoint
+    iterations = int(ends[i] - max(start_it, ends[i] - stage.advance_after_iterations))
     env_cfg = build_stage_env_cfg(training, i, wrist=wrist)
     apply_overrides({"env": env_cfg}, env_overrides)
     env_cfg.seed = agent_cfg.seed + i
     if rank == 0:
       dump_yaml(log_dir / "params" / f"env_stage{i}_{stage.name}.yaml", asdict(env_cfg))
-      print(
-        f"[INFO] stage {i} '{stage.name}': {stage.advance_after_iterations} iterations"
-      )
+      print(f"[INFO] stage {i} '{stage.name}': {iterations} iterations")
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     if rank == 0:
       dump_yaml(
@@ -98,12 +125,17 @@ def _train(
     if runner is None:
       runner = WujiOnPolicyRunner(wrapped, asdict(agent_cfg), str(log_dir), device)
       runner.add_git_repo_to_log(__file__)
+      if resume is not None:
+        runner.load(resume, map_location=device)
+        runner.current_learning_iteration = start_it
+        env.common_step_counter = common_steps
     else:
       # Same env count and observation layout: keep the policy and storage.
       runner.env = wrapped
       env.max_common_steps = agent_cfg.max_iterations * agent_cfg.num_steps_per_env
       env.common_step_counter = common_steps  # time-ramped terms carry on
-    runner.learn(stage.advance_after_iterations, init_at_random_ep_len=True)
+    _plain_buffers(runner)
+    runner.learn(iterations, init_at_random_ep_len=True)
     if rank == 0:
       runner.save(
         str(
@@ -129,6 +161,11 @@ def main() -> None:
     "--wrist",
     action="store_true",
     help="train with the actuated wrist (default: wrist fixed at the mount)",
+  )
+  parser.add_argument(
+    "--resume",
+    default=None,
+    help="checkpoint of this training: continue after its iteration (new log dir)",
   )
   args, overrides = parser.parse_known_args()
   env_overrides = [o for o in overrides if o.startswith("env.")]
@@ -188,7 +225,14 @@ def main() -> None:
     f"GPUs {gpu_ids or 'default'}, logging to {log_dir}"
   )
 
-  train_args = (str(training.path), agent_cfg, env_overrides, log_dir, wrist)
+  train_args = (
+    str(training.path),
+    agent_cfg,
+    env_overrides,
+    log_dir,
+    wrist,
+    args.resume,
+  )
   if gpu_ids is None or len(gpu_ids) == 1:
     if gpu_ids:
       os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_ids[0])
