@@ -68,8 +68,10 @@ class JointPositionOffsetEMAAction(JointPositionAction):
     )
 
     in_warmup = (self._env.episode_length_buf < self._warmup_steps).unsqueeze(-1)
-    self._processed_actions = torch.where(in_warmup, self._warmup_target, smoothed)
-    self._prev_target = self._processed_actions.clone()
+    # In place: observations hold these tensors (also inside replayed CUDA
+    # graphs), so they keep their storage.
+    self._processed_actions.copy_(torch.where(in_warmup, self._warmup_target, smoothed))
+    self._prev_target.copy_(self._processed_actions)
 
   @property
   def processed_action(self) -> torch.Tensor:

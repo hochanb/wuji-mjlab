@@ -220,7 +220,7 @@ def grasp_joint_goal(
   (soft limits to [-1, 1])."""
   cmd = env.command_manager.get_term(command_name)
   robot: Entity = env.scene[asset_cfg.name]
-  limits = robot.data.soft_joint_pos_limits[:, cmd._finger_joint_ids]
+  limits = robot.data.soft_joint_pos_limits[:, cmd.finger_joint_index]
   center = 0.5 * (limits[..., 0] + limits[..., 1])
   half = 0.5 * (limits[..., 1] - limits[..., 0])
   return ((cmd.joint_goal - center) / (half + 1e-6)).clamp(-1.0, 1.0)

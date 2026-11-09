@@ -242,9 +242,10 @@ class TipSlidePenalty(ManagerTermBase):
     self._sensor = env.scene[sensor_cfg.name]
     self._threshold = cfg.params.get("contact_threshold", 0.0)
     self._binding = get_fingertip_contact_binding(env, robot_cfg, sensor_cfg)
+    self._site_index = torch.as_tensor(self._binding.site_ids, device=env.device)
 
   def __call__(self, env, **_params) -> torch.Tensor:
-    tip_lin_vel = self._robot.data.site_lin_vel_w[:, self._binding.site_ids, :]
+    tip_lin_vel = self._robot.data.site_lin_vel_w[:, self._site_index, :]
     obj_lin_vel = self._object.data.root_link_lin_vel_w.unsqueeze(1)
     rel_vel = torch.norm(tip_lin_vel - obj_lin_vel, dim=-1)
     data = self._sensor.data

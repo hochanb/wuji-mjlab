@@ -12,6 +12,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import matrix_from_quat, quat_apply_inverse
 from mjlab.viewer.debug_visualizer import NullDebugVisualizer
 
+from wuji_mjlab.tasks.reorient.mdp import state_cache
 from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
   native_visualization_context,
 )
@@ -68,6 +69,12 @@ def _compute_cage_escape_dist(
   palm_quat = robot.data.body_link_pose_w[:, palm_id, 3:7]
 
   hand_ids = robot_cfg.body_ids
+  if isinstance(hand_ids, (list, tuple)):  # once as a device tensor: no copy
+    hand_ids = state_cache.constant(
+      robot.data,
+      f"body_ids{tuple(hand_ids)}",
+      lambda: torch.tensor(hand_ids, device=env.device),
+    )
   hand_pos_w = robot.data.body_link_pose_w[:, hand_ids, :3]
   hand_rel = hand_pos_w - palm_pos.unsqueeze(1)
   palm_quat_b = palm_quat.unsqueeze(1).expand(-1, hand_rel.shape[1], -1)
@@ -172,8 +179,12 @@ class CageEscapePenalty(ManagerTermBase):
     escape_dist = _compute_cage_escape_dist(env, object_cfg, robot_cfg, margin, up_axis)
     outside = escape_dist > 0
 
-    self._penalty_counter = update_cage_penalty_counter(
-      self._penalty_counter, outside, counter_decay_rate, max_count
+    # In place: other terms hold this tensor (object_speed_limit, also as a
+    # replayed CUDA graph), so it keeps its storage.
+    self._penalty_counter.copy_(
+      update_cage_penalty_counter(
+        self._penalty_counter, outside, counter_decay_rate, max_count
+      )
     )
     setattr(env, _CAGE_COUNTER_ATTR, self._penalty_counter)
 

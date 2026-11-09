@@ -15,6 +15,14 @@ if _chunk_size:
 
   install_chunked_simulation(int(_chunk_size))
 
+# mjlab's reset paths synchronise CPU and GPU ~100 times per reset (scalar
+# row writes, .item() logging); swap in equivalent sync-free versions
+# (wuji_mjlab/rl/sync_free_resets.py). WUJI_SYNC_FREE_RESETS=0 keeps mjlab's.
+if os.environ.get("WUJI_SYNC_FREE_RESETS", "1") != "0":
+  from wuji_mjlab.rl.sync_free_resets import install as _install_sync_free_resets
+
+  _install_sync_free_resets()
+
 _BLACKLIST_PKGS = [
   "common",
   ".mdp",
