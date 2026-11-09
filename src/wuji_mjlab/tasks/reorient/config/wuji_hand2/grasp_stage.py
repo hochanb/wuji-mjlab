@@ -47,6 +47,20 @@ EXAMPLE_TRAINING = (
 _TIP_ERROR_NOISE = Unoise(n_min=-0.008, n_max=0.008)
 _TIP_REWARD_WEIGHT = 5.0
 _JOINT_REWARD_WEIGHT = 5.0
+# Warmup targets a little inside the initial grasp, so the hand grips the
+# object instead of just touching it: thumb opposition and the flexion joints
+# [rad]. On the cube_dex_3k grasps this cut the share of objects moving
+# > 10 mm in the 0.4 s warmup from 75 % to 35 % (dropped: 2.1 % -> 0.5 %).
+_WARMUP_SQUEEZE = {
+  r".*_finger1_joint1": 0.2,
+  r".*_finger1_joint[34]": 0.1,
+  r".*_finger[2-5]_joint[134]": 0.1,
+}
+# Hand shape reward: exp(-e / scale) per finger. At the training start the
+# finger joint errors are ~1 rad, where a 0.2 rad scale gives ~0 and no
+# gradient; and the pose gate would hold it at 0 until the object is near its
+# goal pose, so part of it (gate_floor) is always paid.
+_JOINT_REWARD_PARAMS = {"scale": 0.6, "gate_floor": 0.3}
 
 
 def build_stage_env_cfg(
@@ -98,6 +112,7 @@ def build_stage_env_cfg(
     params={"grasp_sets": init_sets, "hand": training.hand},
   )
   cfg.actions["finger_joint_pos"].warmup_hold_reset_pose = True
+  cfg.actions["finger_joint_pos"].warmup_squeeze = _WARMUP_SQUEEZE
 
   # Observations: identical structure in every stage of a training. Pose
   # errors are zeroed for goals that do not require that part.
@@ -157,7 +172,7 @@ def build_stage_env_cfg(
   cfg.rewards["grasp_joint"] = RewardTermCfg(
     func=graphed_term(gmdp.grasp_joint_proximity),
     weight=_JOINT_REWARD_WEIGHT,
-    params=command,
+    params={**command, **_JOINT_REWARD_PARAMS},
   )
   # The reorient task's pull towards the cage pose works against goal hand
   # shapes; the hand shape is rewarded by grasp_joint alone.
