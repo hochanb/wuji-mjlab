@@ -15,6 +15,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply, quat_error_magnitude, quat_mul
 
 from wuji_mjlab.tasks.reorient.grasp_stage.schema import load_grasp_sets
+from wuji_mjlab.tasks.reorient.mdp import state_cache
 from wuji_mjlab.tasks.reorient.mdp._env_utils import resolve_env_ids
 from wuji_mjlab.tasks.reorient.mdp.cage import read_cage_penalty_counter
 from wuji_mjlab.tasks.reorient.mdp.observations import (
@@ -299,15 +300,37 @@ def grasp_joint_proximity(
   pos_bound: float = 0.01,
   pos_margin: float = 0.02,
   gate_floor: float = 0.0,
+  joint_importance: tuple[float, ...] | None = None,
 ) -> torch.Tensor:
-  """w_joint-weighted mean over fingers of exp(-e / scale), e the finger's
-  largest joint error [rad], with the same goal-pose gate. Zero when every
-  w_joint is 0."""
+  """Hand-shape reward with the same goal-pose gate; zero when every w_joint
+  is 0.
+
+  Without ``joint_importance``: the w_joint-weighted mean over fingers of
+  exp(-e / scale), e the finger's largest joint error [rad]. With it (one
+  value per finger joint, base first): the weighted mean over every finger
+  joint of exp(-e / scale), joint weight w_joint(finger) * importance(joint),
+  so errors near the base, which the finger's kinematics amplify towards the
+  tip, count more than those near the tip."""
   cmd = env.command_manager.get_term(command_name)
-  per_finger = torch.exp(-cmd.joint_error() / scale)
   gate = _pose_gate(cmd, ori_bound, ori_margin, pos_bound, pos_margin)
   gate = gate_floor + (1.0 - gate_floor) * gate
-  return gate * _weighted_mean(per_finger, cmd.joint_weights)
+  if joint_importance is None:
+    per_finger = torch.exp(-cmd.joint_error() / scale)
+    return gate * _weighted_mean(per_finger, cmd.joint_weights)
+  err = cmd.joint_errors()  # [N, F, J]
+  importance = state_cache.constant(
+    cmd,
+    f"joint_importance{tuple(joint_importance)}",
+    lambda: torch.tensor(joint_importance, dtype=err.dtype, device=err.device),
+  )
+  if importance.shape[0] != err.shape[-1]:
+    raise ValueError(
+      f"joint_importance has {importance.shape[0]} values, fingers have "
+      f"{err.shape[-1]} joints"
+    )
+  weights = cmd.joint_weights.unsqueeze(-1) * importance
+  per_joint = torch.exp(-err / scale)
+  return gate * _weighted_mean(per_joint.flatten(1), weights.flatten(1))
 
 
 # -- terminations ------------------------------------------------------------

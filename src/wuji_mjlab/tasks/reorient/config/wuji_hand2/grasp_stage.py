@@ -46,7 +46,7 @@ EXAMPLE_TRAINING = (
 # both feed it; same as the position-error noise.
 _TIP_ERROR_NOISE = Unoise(n_min=-0.008, n_max=0.008)
 _TIP_REWARD_WEIGHT = 5.0
-_JOINT_REWARD_WEIGHT = 5.0
+_JOINT_REWARD_WEIGHT = 10.0
 # Warmup targets a little inside the initial grasp, so the hand grips the
 # object instead of just touching it: thumb opposition and the flexion joints
 # [rad]. On the cube_dex_3k grasps this cut the share of objects moving
@@ -59,8 +59,15 @@ _WARMUP_SQUEEZE = {
 # Hand shape reward: exp(-e / scale) per finger. At the training start the
 # finger joint errors are ~1 rad, where a 0.2 rad scale gives ~0 and no
 # gradient; and the pose gate would hold it at 0 until the object is near its
-# goal pose, so part of it (gate_floor) is always paid.
-_JOINT_REWARD_PARAMS = {"scale": 0.6, "gate_floor": 0.3}
+# goal pose, so part of it (gate_floor) is always paid. Per joint, weighted
+# by the finger's w_joint times the joint's importance (joints 1-4, base
+# first): an error near the base moves everything above it, one near the tip
+# changes the shape less.
+_JOINT_REWARD_PARAMS = {
+  "scale": 0.6,
+  "gate_floor": 0.3,
+  "joint_importance": (1.0, 1.0, 0.5, 0.3),
+}
 
 
 def build_stage_env_cfg(
