@@ -41,10 +41,9 @@ def action_jerk_rms(env: ManagerBasedRlEnv) -> torch.Tensor:
     prev_delta = cached_delta
 
   if hasattr(env, "reset_buf"):
-    reset_mask = env.reset_buf.bool()
-    if reset_mask.any():
-      prev_delta = prev_delta.clone()
-      prev_delta[reset_mask] = 0.0
+    # Without branching on the mask: a Python ``if mask.any()`` waits for the
+    # GPU (right after the physics step, the costliest place to wait).
+    prev_delta = prev_delta.masked_fill(env.reset_buf.bool().unsqueeze(-1), 0.0)
 
   jerk = delta - prev_delta
   setattr(env, _JERK_PREV_DELTA_ATTR, delta.clone())

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 
 import torch
@@ -46,6 +47,14 @@ class JointPositionOffsetEMAAction(JointPositionAction):
     # Joint targets held during the warmup: the default pose, or with
     # warmup_hold_reset_pose the pose the reset left each env in.
     self._warmup_target = self._default_joint_pos.clone()
+    # Added to the held reset pose: targets a little inside it, so the fingers
+    # already press on what they hold (PD force ~ kp * offset).
+    self._warmup_squeeze = torch.zeros(len(self._target_names), device=self.device)
+    for pattern, value in (cfg.warmup_squeeze or {}).items():
+      hits = [i for i, n in enumerate(self._target_names) if re.fullmatch(pattern, n)]
+      if not hits:
+        raise ValueError(f"warmup_squeeze: '{pattern}' matches no joint")
+      self._warmup_squeeze[hits] = value
 
   def process_actions(self, actions: torch.Tensor):
     self._raw_actions[:] = actions
@@ -59,8 +68,10 @@ class JointPositionOffsetEMAAction(JointPositionAction):
     )
 
     in_warmup = (self._env.episode_length_buf < self._warmup_steps).unsqueeze(-1)
-    self._processed_actions = torch.where(in_warmup, self._warmup_target, smoothed)
-    self._prev_target = self._processed_actions.clone()
+    # In place: observations hold these tensors (also inside replayed CUDA
+    # graphs), so they keep their storage.
+    self._processed_actions.copy_(torch.where(in_warmup, self._warmup_target, smoothed))
+    self._prev_target.copy_(self._processed_actions)
 
   @property
   def processed_action(self) -> torch.Tensor:
@@ -72,7 +83,9 @@ class JointPositionOffsetEMAAction(JointPositionAction):
       # Reset events have already written this episode's joint state.
       pose = self._entity.data.joint_pos[env_ids][:, self._target_ids]
       self._warmup_target[env_ids] = torch.clamp(
-        pose, self._lower_limits[env_ids], self._upper_limits[env_ids]
+        pose + self._warmup_squeeze,
+        self._lower_limits[env_ids],
+        self._upper_limits[env_ids],
       )
     self._prev_target[env_ids] = self._warmup_target[env_ids]
     self._processed_actions[env_ids] = self._warmup_target[env_ids]
@@ -88,6 +101,9 @@ class JointPositionOffsetEMAActionCfg(JointPositionActionCfg):
   # Hold the joints where the reset left them during the warmup instead of
   # driving them to the default (cage) pose, so they do not close on their own.
   warmup_hold_reset_pose: bool = False
+  # With warmup_hold_reset_pose: {joint regex: rad} added to the held pose, to
+  # grip what the reset put in the hand instead of just touching it.
+  warmup_squeeze: dict[str, float] | None = None
 
   def build(self, env) -> JointPositionOffsetEMAAction:
     return JointPositionOffsetEMAAction(self, env)

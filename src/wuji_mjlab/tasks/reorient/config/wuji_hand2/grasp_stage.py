@@ -30,6 +30,7 @@ from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
 from wuji_mjlab.tasks.reorient.grasp_stage import mdp as gmdp
 from wuji_mjlab.tasks.reorient.grasp_stage.command import GraspGoalCommandCfg
 from wuji_mjlab.tasks.reorient.grasp_stage.schema import TrainingSpec, load_training
+from wuji_mjlab.tasks.reorient.mdp.graphed import graph_plain_terms, graphed_term
 
 from . import _reorient_pos_hand2_50hz_env_cfg, _with_wrist
 from .hand2_constants import HAND2_TIP_PAD_POINTS, REORIENT_HAND2_CUBE_INIT_POS
@@ -112,7 +113,7 @@ def build_stage_env_cfg(
     for name, func in pose_obs.items():
       term = cfg.observations[group].terms.get(name)
       if term is not None:
-        term.func = func  # same parameters (injection) as before
+        term.func = graphed_term(func)  # same parameters (injection) as before
         if corrupt and term.noise is not None:
           # Noise before the mask, so a part not required reads exactly 0.
           term.params = {**term.params, "noise": term.noise}
@@ -122,7 +123,7 @@ def build_stage_env_cfg(
     terms = cfg.observations[group].terms
     noisy = cfg.observations[group].enable_corruption and group == "policy"
     terms["grasp_tip_error"] = ObservationTermCfg(
-      func=gmdp.grasp_tip_error,
+      func=graphed_term(gmdp.grasp_tip_error),
       params={**command, "noise": _TIP_ERROR_NOISE} if noisy else command,
       history_length=history,
     )
@@ -142,19 +143,38 @@ def build_stage_env_cfg(
 
   # Pose rewards scale with w_pos / w_rot. Both grasp schemes are always
   # present; the weights switch them on.
-  cfg.rewards["orientation_alignment"].func = gmdp.grasp_orientation_alignment
-  cfg.rewards["position_alignment"].func = gmdp.grasp_position_alignment
+  # Pure tensor terms replay as CUDA graphs (mdp/graphed.py): one launch each
+  # instead of tens of small kernels.
+  cfg.rewards["orientation_alignment"].func = graphed_term(
+    gmdp.grasp_orientation_alignment
+  )
+  cfg.rewards["position_alignment"].func = graphed_term(gmdp.grasp_position_alignment)
   cfg.rewards["grasp_tip"] = RewardTermCfg(
-    func=gmdp.grasp_tip_proximity, weight=_TIP_REWARD_WEIGHT, params=command
+    func=graphed_term(gmdp.grasp_tip_proximity),
+    weight=_TIP_REWARD_WEIGHT,
+    params=command,
   )
   cfg.rewards["grasp_joint"] = RewardTermCfg(
-    func=gmdp.grasp_joint_proximity, weight=_JOINT_REWARD_WEIGHT, params=command
+    func=graphed_term(gmdp.grasp_joint_proximity),
+    weight=_JOINT_REWARD_WEIGHT,
+    params=command,
   )
   # The reorient task's pull towards the cage pose works against goal hand
   # shapes; the hand shape is rewarded by grasp_joint alone.
   cfg.rewards.pop("hand_pose", None)
   cfg.terminations["object_speed_limit"] = TerminationTermCfg(
-    func=gmdp.object_speed_limit
+    func=graphed_term(gmdp.object_speed_limit)
+  )
+  # The other plain-function observation and metric terms as well (each
+  # checked against eager with WUJI_GRAPH_CHECK=1). Eager: action_jerk_rms
+  # swaps its previous delta in a Python attribute every step; dr_params
+  # copies index lists to the GPU on every call; the contact-sensor metrics
+  # read sensor data refreshed on the Python side.
+  for group in ("policy", "critic"):
+    graph_plain_terms(cfg.observations[group].terms, eager=("dr_params",))
+  graph_plain_terms(
+    cfg.metrics,
+    eager=("action_jerk_rms", "finger_collision_frequency", "palm_detach_frequency"),
   )
   return cfg
 

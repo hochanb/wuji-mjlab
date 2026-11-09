@@ -28,6 +28,7 @@ from wuji_mjlab.tasks.reorient.grasp_stage.mdp import (
   sample_rows,
 )
 from wuji_mjlab.tasks.reorient.grasp_stage.schema import load_grasp_sets
+from wuji_mjlab.tasks.reorient.mdp import graphed, state_cache
 from wuji_mjlab.tasks.reorient.mdp.commands import (
   InHandReorientCommand,
   InHandReorientCommandCfg,
@@ -86,6 +87,9 @@ class GraspGoalCommand(InHandReorientCommand):
       torch.tensor(tag_quat, dtype=torch.float32, device=dev)
     )
     self._finger_joint_ids, _ = self.robot.find_joints(cfg.finger_joint_pattern)
+    # As a device tensor: indexing with the Python list copies it to the GPU
+    # every time, which waits for the queued work.
+    self.finger_joint_index = torch.tensor(self._finger_joint_ids, device=dev)
     k = len(self._tip_site_ids)
     if goals.joint_q.shape[-1] != len(self._finger_joint_ids):
       raise ValueError(
@@ -119,6 +123,9 @@ class GraspGoalCommand(InHandReorientCommand):
     self.metrics["tip_error"] = torch.zeros(n, device=dev)
     self.metrics["joint_error"] = torch.zeros(n, device=dev)
     self._ghost_model: mujoco.MjModel | None = None  # built on first draw
+    # The metrics read only tensors updated in place: one graph replay a step.
+    if graphed.ENABLED and "cuda" in str(dev):
+      self._metrics_fn = graphed.GraphedFn(self._metric_tensors, name="metrics")
     self.show_goal_hand = cfg.goal_hand_alpha > 0
 
   def compute(self, dt, env_ids=None) -> None:
@@ -153,23 +160,26 @@ class GraspGoalCommand(InHandReorientCommand):
 
   # -- errors ----------------------------------------------------------------
   def _grasp_errors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if state_cache.bypassed():  # graph capture: no shared buffers
+      return self._compute_grasp_errors()
     key = (int(self._env.common_step_counter), self._cache_epoch)
     if self._cache_key != key or self._cache is None:
-      tip_pos, target_pos = self.fingertip_pos_w, self.fingertip_target_pos_w
-      target_dir = self.fingertip_target_dir_w
-      offset = tip_pos - (target_pos + self.cfg.pad_depth * target_dir)
-      quat = self.object.data.root_link_quat_w.unsqueeze(1).expand(
-        -1, offset.shape[1], -1
-      )
-      rel = tip_pos - target_pos
-      cos = (rel * target_dir).sum(-1) / rel.norm(dim=-1).clamp_min(1e-6)
-      q = self.robot.data.joint_pos[:, self._finger_joint_ids]
-      err = (
-        (q - self.joint_goal).abs().view(self.num_envs, self.tip_weights.shape[1], -1)
-      )
-      self._cache = (quat_apply_inverse(quat, offset), cos, err.amax(-1))
+      self._cache = self._compute_grasp_errors()
       self._cache_key = key
     return self._cache
+
+  def _compute_grasp_errors(self):
+    tip_pos, target_pos = self.fingertip_pos_w, self.fingertip_target_pos_w
+    target_dir = self.fingertip_target_dir_w
+    offset = tip_pos - (target_pos + self.cfg.pad_depth * target_dir)
+    quat = self.object.data.root_link_quat_w.unsqueeze(1).expand(
+      -1, offset.shape[1], -1
+    )
+    rel = tip_pos - target_pos
+    cos = (rel * target_dir).sum(-1) / rel.norm(dim=-1).clamp_min(1e-6)
+    q = self.robot.data.joint_pos[:, self.finger_joint_index]
+    err = (q - self.joint_goal).abs().view(self.num_envs, self.tip_weights.shape[1], -1)
+    return quat_apply_inverse(quat, offset), cos, err.amax(-1)
 
   def tip_offset_b(self) -> torch.Tensor:
     """[N, F, 3] tip reference point minus where it sits when the pad touches
@@ -198,15 +208,14 @@ class GraspGoalCommand(InHandReorientCommand):
     joint_ok = joint_ok | (self.joint_weights <= 0.0)
     return tip_ok.all(-1) & joint_ok.all(-1)
 
-  def _update_metrics(self) -> None:
-    super()._update_metrics()
+  def _metric_tensors(self) -> dict[str, torch.Tensor]:
+    metrics = super()._metric_tensors()
     w = self.tip_weights > 0
     dist = self.tip_offset_b().norm(dim=-1)
-    self.metrics["tip_error"] = (dist * w).sum(-1) / w.sum(-1).clamp_min(1)
+    metrics["tip_error"] = (dist * w).sum(-1) / w.sum(-1).clamp_min(1)
     wj = self.joint_weights > 0
-    self.metrics["joint_error"] = (self.joint_error() * wj).sum(-1) / wj.sum(
-      -1
-    ).clamp_min(1)
+    metrics["joint_error"] = (self.joint_error() * wj).sum(-1) / wj.sum(-1).clamp_min(1)
+    return metrics
 
   # -- viewer ----------------------------------------------------------------
   def create_gui(self, name, server, get_env_idx, on_change=None, request_action=None):

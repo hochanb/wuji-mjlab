@@ -14,6 +14,7 @@ from mjlab.utils.lab_api.math import (
 
 from wuji_mjlab.utils.math import random_quat_uniform
 
+from . import state_cache
 from .cage import read_cage_penalty_counter
 from .runtime_state import get_reorient_runtime_state
 
@@ -26,11 +27,21 @@ def tag_pose_w(robot: Entity, site_ids) -> tuple[torch.Tensor, torch.Tensor]:
 
   Its pose is the single source of truth for the sim2real tag frame.
   """
-  pose = robot.data.site_pose_w[:, site_ids[0]]  # (num_envs, 7): xyz + wxyz
+  pose = state_cache.site_pose_w(robot, (site_ids[0],))[:, 0]  # (num_envs, 7)
   return pose[..., :3], pose[..., 3:7]
 
 
 def _target_columns(term, asset: Entity, joint_ids) -> torch.Tensor | slice:
+  # Fixed per (term, joints); reading the GPU ids with .tolist() synchronises,
+  # so it is worked out once.
+  key = ("target_columns", id(asset), repr(joint_ids))
+  cache = term.__dict__.setdefault("_wuji_columns", {})
+  if key not in cache:
+    cache[key] = _find_target_columns(term, asset, joint_ids)
+  return cache[key]
+
+
+def _find_target_columns(term, asset: Entity, joint_ids) -> torch.Tensor | slice:
   target_ids = [int(i) for i in torch.as_tensor(term._target_ids).flatten().tolist()]
   if isinstance(joint_ids, slice):
     joint_ids = list(range(asset.num_joints))[joint_ids]
@@ -239,9 +250,20 @@ def body_pos_rel(
   offset: tuple[float, float, float] = (0.0, 0.0, 0.5),
 ) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
-  offset_tensor = torch.tensor(offset, device=asset.data.body_link_pos_w.device)
+  # Made once: a CPU-to-GPU copy per call waits for the GPU.
+  device = asset.data.body_link_pos_w.device
+  offset_tensor = state_cache.constant(
+    asset.data, f"offset{tuple(offset)}", lambda: torch.tensor(offset, device=device)
+  )
+  body_ids = asset_cfg.body_ids
+  if isinstance(body_ids, (list, tuple)):
+    body_ids = state_cache.constant(
+      asset.data,
+      f"body_ids{tuple(body_ids)}",
+      lambda: torch.tensor(body_ids, device=device),
+    )
   return (
-    asset.data.body_link_pos_w[:, asset_cfg.body_ids]
+    asset.data.body_link_pos_w[:, body_ids]
     - env.scene.env_origins.unsqueeze(1)
     - offset_tensor
   ).flatten(start_dim=1)

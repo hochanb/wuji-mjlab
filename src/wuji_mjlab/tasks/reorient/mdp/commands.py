@@ -16,6 +16,7 @@ from mjlab.utils.lab_api.math import (
   quat_mul,
 )
 
+from wuji_mjlab.tasks.reorient.mdp import state_cache
 from wuji_mjlab.tasks.reorient.mdp.command_visualization import (
   ReorientCommandVisualization,
   draw_fingertip_targets,
@@ -41,6 +42,7 @@ class InHandReorientCommand(CommandTerm):
         f"'{cfg.palm_body_pattern}' on entity '{cfg.robot_entity_name}'."
       )
     self.palm_body_id = int(palm_ids[0])
+    state_cache.install(env)  # tag / tip poses computed once per physics state
 
     tag_ids, _ = self.robot.find_sites(cfg.tag_site_pattern)
     if not tag_ids:
@@ -164,30 +166,51 @@ class InHandReorientCommand(CommandTerm):
   def goal_quat(self) -> torch.Tensor:
     return self.goal_quat_w
 
+  def _tag_pose_w(self) -> torch.Tensor:
+    return state_cache.site_pose_w(self.robot, (self.tag_site_id,))[:, 0]
+
   @property
   def goal_quat_w(self) -> torch.Tensor:
     """World goal orientation from the current wrist-tag pose."""
-    tag_quat_w = self.robot.data.site_pose_w[:, self.tag_site_id, 3:7]
-    return quat_mul(tag_quat_w, self.goal_quat_tag)
+    return state_cache.memo(
+      self,
+      "goal_quat_w",
+      (state_cache.epoch(self.robot), self.goal_quat_tag._version),
+      lambda: quat_mul(self._tag_pose_w()[:, 3:7], self.goal_quat_tag),
+    )
 
   @property
   def goal_pos_w(self) -> torch.Tensor:
-    tag_pose = self.robot.data.site_pose_w[:, self.tag_site_id]
-    return tag_pose[:, :3] + quat_apply(tag_pose[:, 3:7], self.goal_pos_tag)
+    def compute() -> torch.Tensor:
+      tag_pose = self._tag_pose_w()
+      return tag_pose[:, :3] + quat_apply(tag_pose[:, 3:7], self.goal_pos_tag)
+
+    key = (state_cache.epoch(self.robot), self.goal_pos_tag._version)
+    return state_cache.memo(self, "goal_pos_w", key, compute)
 
   def pos_error(self) -> torch.Tensor:
     return torch.norm(self.object.data.root_link_pos_w - self.goal_pos_w, dim=-1)
 
-  def _update_metrics(self) -> None:
-    self.metrics["goal_reach_count"] = self.goal_reach_count.float()
-    ori_err = quat_error_magnitude(self.object.data.root_link_quat_w, self.goal_quat_w)
-    self.metrics["ori_error"] = ori_err
-    self.metrics["hold_counter"] = self.hold_counter.float()
-    self.metrics["goal_timer"] = self.goal_timer.float()
-    self.metrics["in_success_window"] = self.in_success_window.float()
-    self.metrics["window_timer"] = self.window_timer.float()
+  def _metric_tensors(self) -> dict[str, torch.Tensor]:
+    """This step's metrics: tensors only (subclasses may replay this as a
+    CUDA graph, see ``_metrics_fn``)."""
+    metrics = {
+      "goal_reach_count": self.goal_reach_count.float(),
+      "ori_error": quat_error_magnitude(
+        self.object.data.root_link_quat_w, self.goal_quat_w
+      ),
+      "hold_counter": self.hold_counter.float(),
+      "goal_timer": self.goal_timer.float(),
+      "in_success_window": self.in_success_window.float(),
+      "window_timer": self.window_timer.float(),
+    }
     if self.cfg.goal_pos_range is not None:
-      self.metrics["pos_error"] = self.pos_error()
+      metrics["pos_error"] = self.pos_error()
+    return metrics
+
+  def _update_metrics(self) -> None:
+    fn = getattr(self, "_metrics_fn", None) or self._metric_tensors
+    self.metrics.update(fn())
     self._visualization.update_status_gui(
       num_envs=self.num_envs,
       policy_status_for_env=self._policy_status_for_env,
@@ -208,7 +231,7 @@ class InHandReorientCommand(CommandTerm):
     elif self.goal_max_angle >= math.pi:
       self.goal_quat_tag[env_ids] = random_quat_uniform(n, self.device)
     else:
-      tag_quat_w = self.robot.data.site_pose_w[env_ids, self.tag_site_id, 3:7]
+      tag_quat_w = self._tag_pose_w()[env_ids, 3:7]
       object_in_tag = quat_mul(
         quat_inv(tag_quat_w), self.object.data.root_link_quat_w[env_ids]
       )
@@ -367,9 +390,14 @@ class InHandReorientCommand(CommandTerm):
   def fingertip_pos_w(self) -> torch.Tensor:
     """[N, K, 3] fingertip reference points (tip site + tip_point_offsets in
     the site frame), ordered like the targets."""
-    pose = self.robot.data.site_pose_w[:, self._tip_site_ids]
-    offset = self._tip_point_offset.expand(self.num_envs, -1, -1)
-    return pose[..., :3] + quat_apply(pose[..., 3:7], offset)
+
+    def compute() -> torch.Tensor:
+      pose = state_cache.site_pose_w(self.robot, self._tip_site_ids)
+      offset = self._tip_point_offset.expand(self.num_envs, -1, -1)
+      return pose[..., :3] + quat_apply(pose[..., 3:7], offset)
+
+    key = (state_cache.epoch(self.robot), self._tip_point_offset._version)
+    return state_cache.memo(self, "fingertip_pos_w", key, compute)
 
   @property
   def fingertip_target_dot(self) -> torch.Tensor:
