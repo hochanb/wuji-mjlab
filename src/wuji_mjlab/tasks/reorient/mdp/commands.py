@@ -52,6 +52,7 @@ class InHandReorientCommand(CommandTerm):
 
     # Optional fingertip targets in the object body frame (one per tip site).
     self._tip_site_ids: list[int] = []
+    self.show_tip_targets = True  # viewer: fingertip targets and tip arrows
     if cfg.fingertip_targets is not None:
       tip_ids, tip_names = self.robot.find_sites(cfg.tip_site_pattern)
       if len(tip_ids) != len(cfg.fingertip_targets):
@@ -389,7 +390,7 @@ class InHandReorientCommand(CommandTerm):
       object_quat_w=self.object.data.root_link_quat_w,
       policy_status_for_env=self._policy_status_for_env,
     )
-    if self._tip_site_ids:
+    if self._tip_site_ids and self.show_tip_targets:
       draw_fingertip_targets(
         visualizer=visualizer,
         num_envs=self.num_envs,

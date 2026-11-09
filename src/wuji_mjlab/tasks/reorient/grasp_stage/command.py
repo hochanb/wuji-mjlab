@@ -13,6 +13,7 @@ w_tip > 0 on its target and every finger with w_joint > 0 at its joint goal.
 
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass, replace
 
@@ -117,6 +118,8 @@ class GraspGoalCommand(InHandReorientCommand):
     )
     self.metrics["tip_error"] = torch.zeros(n, device=dev)
     self.metrics["joint_error"] = torch.zeros(n, device=dev)
+    self._ghost_model: mujoco.MjModel | None = None  # built on first draw
+    self.show_goal_hand = cfg.goal_hand_alpha > 0
 
   def compute(self, dt, env_ids=None) -> None:
     self.invalidate_grasp_errors()  # runs after sim.forward(): a new state
@@ -205,6 +208,67 @@ class GraspGoalCommand(InHandReorientCommand):
       -1
     ).clamp_min(1)
 
+  # -- viewer ----------------------------------------------------------------
+  def create_gui(self, name, server, get_env_idx, on_change=None, request_action=None):
+    super().create_gui(name, server, get_env_idx, on_change, request_action)
+    with server.gui.add_folder("Grasp goal"):
+      hand = server.gui.add_checkbox(
+        "Goal hand (ghost)",
+        initial_value=self.show_goal_hand,
+        hint="The goal's finger joint angles on the current hand base.",
+      )
+      tips = server.gui.add_checkbox(
+        "Tip -> target vectors",
+        initial_value=self.show_tip_targets,
+        hint="Fingertip target points on the object, their normals and the "
+        "arrows from each target point to its fingertip.",
+      )
+
+    def toggle(attr, box):
+      def update(_) -> None:
+        setattr(self, attr, box.value)
+        if on_change is not None:
+          on_change()
+
+      return update
+
+    hand.on_update(toggle("show_goal_hand", hand))
+    tips.on_update(toggle("show_tip_targets", tips))
+
+  def _debug_vis_impl(self, visualizer) -> None:
+    super()._debug_vis_impl(visualizer)
+    alpha = self.cfg.goal_hand_alpha
+    show = self.show_goal_hand and alpha > 0
+    env_ids = visualizer.get_env_indices(self.num_envs) if show else []
+    if not env_ids:
+      return
+    if self._ghost_model is None:
+      # The hand's visual geoms only, in one colour; everything else hidden.
+      model = copy.deepcopy(self._env.sim.mj_model)
+      hand = set(self.robot.indexing.geom_ids.tolist())
+      for g in range(model.ngeom):
+        visual = model.geom_contype[g] == 0 and model.geom_conaffinity[g] == 0
+        if g in hand and visual:
+          model.geom_rgba[g] = self.cfg.goal_hand_color
+        else:
+          model.geom_rgba[g, 3] = 0.0
+      self._ghost_model = model
+    # The hand where it is, with the fingers at the goal's joint angles.
+    q_adr = self.robot.indexing.joint_q_adr[self._finger_joint_ids]
+    data = self._env.sim.data
+    mocap = self.robot.indexing.mocap_id
+    for i in env_ids:
+      qpos = data.qpos[i].clone()
+      qpos[q_adr] = self.joint_goal[i]
+      visualizer.add_ghost_mesh(
+        qpos.cpu().numpy(),
+        model=self._ghost_model,
+        mocap_pos=data.mocap_pos[i].cpu().numpy() if mocap is not None else None,
+        mocap_quat=data.mocap_quat[i].cpu().numpy() if mocap is not None else None,
+        alpha=alpha,
+        label=f"goal_hand_{i}",
+      )
+
 
 @dataclass(kw_only=True)
 class GraspGoalCommandCfg(InHandReorientCommandCfg):
@@ -219,6 +283,10 @@ class GraspGoalCommandCfg(InHandReorientCommandCfg):
   tip_success_dist: float = 0.01
   tip_success_angle: float = math.radians(60.0)
   joint_success_tol: float = 0.2
+  # Viewer: the goal hand shape (joint goal on the current hand base) as a
+  # translucent ghost; alpha 0 hides it (also a checkbox in the viser panel).
+  goal_hand_alpha: float = 0.35
+  goal_hand_color: tuple[float, float, float, float] = (0.2, 0.8, 0.4, 1.0)
 
   def build(self, env) -> GraspGoalCommand:
     return GraspGoalCommand(self, env)
