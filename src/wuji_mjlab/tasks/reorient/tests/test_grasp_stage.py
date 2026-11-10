@@ -204,9 +204,15 @@ def test_hand_shape_reward_weights_joints_by_importance(stage_env):
   cmd.joint_weights[:] = torch.tensor([1.0, 1.0, 0.0, 1.0, 0.0])
   imp = (1.0, 1.0, 0.5, 0.3)
   kw = dict(scale=0.6, gate_floor=1.0)  # gate floor 1: no pose gate
-  got = gmdp.grasp_joint_proximity(stage_env, joint_importance=imp, **kw)
+  got = gmdp.grasp_joint_proximity(
+    stage_env, joint_importance=imp, joint_reduce="mean", **kw
+  )
   w = cmd.joint_weights.unsqueeze(-1) * torch.tensor(imp)
   want = (torch.exp(-err / 0.6) * w).sum((1, 2)) / w.sum((1, 2))
+  torch.testing.assert_close(got, want)
+  got = gmdp.grasp_joint_proximity(stage_env, joint_importance=imp, **kw)  # max
+  per_finger = torch.exp(-(err * torch.tensor(imp)).amax(-1) / 0.6)
+  want = (per_finger * cmd.joint_weights).sum(-1) / cmd.joint_weights.sum(-1)
   torch.testing.assert_close(got, want)
   # Without importance: the finger-max form.
   old = gmdp.grasp_joint_proximity(stage_env, **kw)
@@ -221,8 +227,12 @@ def test_hand_shape_reward_weights_joints_by_importance(stage_env):
     cmd.joint_goal[:] = q_now
     cmd.joint_goal[:, 4 + joint] += 0.5
     cmd.invalidate_grasp_errors()
-    reward[joint] = gmdp.grasp_joint_proximity(stage_env, joint_importance=imp, **kw)
-  assert torch.all(reward[3] > reward[0])
+    for reduce in ("max", "mean"):
+      reward[joint, reduce] = gmdp.grasp_joint_proximity(
+        stage_env, joint_importance=imp, joint_reduce=reduce, **kw
+      )
+  for reduce in ("max", "mean"):
+    assert torch.all(reward[3, reduce] > reward[0, reduce])
   cmd.joint_goal[:] = q_goal
   cmd.joint_weights[:] = saved
   cmd.invalidate_grasp_errors()

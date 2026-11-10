@@ -59,14 +59,16 @@ _WARMUP_SQUEEZE = {
 # Hand shape reward: exp(-e / scale) per finger. At the training start the
 # finger joint errors are ~1 rad, where a 0.2 rad scale gives ~0 and no
 # gradient; and the pose gate would hold it at 0 until the object is near its
-# goal pose, so part of it (gate_floor) is always paid. Per joint, weighted
-# by the finger's w_joint times the joint's importance (joints 1-4, base
-# first): an error near the base moves everything above it, one near the tip
-# changes the shape less.
+# goal pose, so part of it (gate_floor) is always paid. Joint errors are
+# scaled by the joint's importance (joints 1-4, base first: an error near the
+# base moves everything above it, one near the tip changes the shape less)
+# and each finger is judged by its largest one: with a mean over joints
+# (joint_reduce="mean") the m2o policy left single joints ~0.9 rad off.
 _JOINT_REWARD_PARAMS = {
   "scale": 0.6,
   "gate_floor": 0.3,
   "joint_importance": (1.0, 1.0, 0.5, 0.3),
+  "joint_reduce": "max",
 }
 
 

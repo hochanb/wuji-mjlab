@@ -301,16 +301,22 @@ def grasp_joint_proximity(
   pos_margin: float = 0.02,
   gate_floor: float = 0.0,
   joint_importance: tuple[float, ...] | None = None,
+  joint_reduce: str = "max",
 ) -> torch.Tensor:
   """Hand-shape reward with the same goal-pose gate; zero when every w_joint
   is 0.
 
   Without ``joint_importance``: the w_joint-weighted mean over fingers of
   exp(-e / scale), e the finger's largest joint error [rad]. With it (one
-  value per finger joint, base first): the weighted mean over every finger
-  joint of exp(-e / scale), joint weight w_joint(finger) * importance(joint),
-  so errors near the base, which the finger's kinematics amplify towards the
-  tip, count more than those near the tip."""
+  value per finger joint, base first), errors near the base, which the
+  finger's kinematics amplify towards the tip, count more than those near the
+  tip:
+
+  - ``joint_reduce="max"``: e = the finger's largest importance * joint
+    error, then the w_joint-weighted mean over fingers. No joint can be left
+    far off cheaply.
+  - ``joint_reduce="mean"``: the weighted mean over every finger joint of
+    exp(-e / scale), weight w_joint(finger) * importance(joint)."""
   cmd = env.command_manager.get_term(command_name)
   gate = _pose_gate(cmd, ori_bound, ori_margin, pos_bound, pos_margin)
   gate = gate_floor + (1.0 - gate_floor) * gate
@@ -328,6 +334,11 @@ def grasp_joint_proximity(
       f"joint_importance has {importance.shape[0]} values, fingers have "
       f"{err.shape[-1]} joints"
     )
+  if joint_reduce == "max":
+    per_finger = torch.exp(-(err * importance).amax(-1) / scale)
+    return gate * _weighted_mean(per_finger, cmd.joint_weights)
+  if joint_reduce != "mean":
+    raise ValueError(f"joint_reduce must be 'max' or 'mean', got {joint_reduce!r}")
   weights = cmd.joint_weights.unsqueeze(-1) * importance
   per_joint = torch.exp(-err / scale)
   return gate * _weighted_mean(per_joint.flatten(1), weights.flatten(1))
