@@ -15,6 +15,7 @@ free-body spin-up.
 from __future__ import annotations
 
 from dataclasses import fields
+from functools import partial
 from pathlib import Path
 
 from mjlab.managers.event_manager import EventTermCfg
@@ -72,6 +73,26 @@ _JOINT_REWARD_PARAMS = {
 }
 
 
+# Hand-object contacts: condim 6 (sliding, torsional and rolling friction)
+# on the hand's collision geoms, which set the contact parameters (priority
+# 1 over the object). Sliding friction drawn per env in [1.0, 2.0] (the
+# middle without domain randomization); torsional 0.005 and rolling 0.0001
+# stay at the hand defaults.
+_HAND_CONDIM = 6
+_HAND_SLIDING_FRICTION = (1.0, 2.0)
+
+
+def _hand_contact_spec(spec_fn, condim: int, sliding: float):
+  """``spec_fn()`` with every colliding geom at ``condim`` and sliding
+  friction ``sliding``."""
+  spec = spec_fn()
+  for geom in spec.geoms:
+    if geom.contype or geom.conaffinity:
+      geom.condim = condim
+      geom.friction[0] = sliding
+  return spec
+
+
 def build_stage_env_cfg(
   training: TrainingSpec, stage_index: int, play: bool = False, wrist: bool = False
 ):
@@ -85,6 +106,14 @@ def build_stage_env_cfg(
   if wrist:
     cfg = _with_wrist(cfg)
   cfg.curriculum.pop("goal_rotation", None)  # goals come from the grasp set
+
+  robot = cfg.scene.entities["robot"]
+  robot.spec_fn = partial(
+    _hand_contact_spec, robot.spec_fn, _HAND_CONDIM, sum(_HAND_SLIDING_FRICTION) / 2
+  )
+  if "robot_friction" in cfg.events:  # domain randomization (not in play)
+    friction = cfg.events["robot_friction"].params
+    friction.update(operation="abs", ranges=_HAND_SLIDING_FRICTION, axes=[0])
 
   # Object.
   x, y, z = REORIENT_HAND2_CUBE_INIT_POS["right"]

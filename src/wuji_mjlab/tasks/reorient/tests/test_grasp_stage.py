@@ -238,6 +238,38 @@ def test_hand_shape_reward_weights_joints_by_importance(stage_env):
   cmd.invalidate_grasp_errors()
 
 
+def test_hand_contacts_condim_6_and_sliding_friction_range():
+  from mjlab.envs import ManagerBasedRlEnv
+  from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
+    example_stage_env_cfg,
+  )
+
+  for play in (True, False):
+    cfg = example_stage_env_cfg(play=play)
+    cfg.scene.num_envs = 4
+    env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
+    try:
+      m = env.sim.mj_model
+      hand = [
+        g
+        for g in range(m.ngeom)
+        if m.body(int(m.geom_bodyid[g])).name.startswith("robot/")
+        and (m.geom_contype[g] or m.geom_conaffinity[g])
+      ]
+      assert set(m.geom_condim[hand].tolist()) == {6}
+      friction = env.sim.model.geom_friction[..., hand, :].reshape(-1, 3)
+      sliding = friction[:, 0]
+      if play:  # no randomization: the middle of the range
+        torch.testing.assert_close(sliding, torch.full_like(sliding, 1.5))
+      else:
+        assert torch.all((sliding >= 1.0) & (sliding <= 2.0))
+        assert sliding.std() > 0.1
+      torch.testing.assert_close(friction[:, 1], torch.full_like(sliding, 0.005))
+      torch.testing.assert_close(friction[:, 2], torch.full_like(sliding, 1e-4))
+    finally:
+      env.close()
+
+
 def test_grasp_errors_are_computed_once_per_sim_state(stage_env, monkeypatch):
   from wuji_mjlab.tasks.reorient.grasp_stage import command as command_module
 
