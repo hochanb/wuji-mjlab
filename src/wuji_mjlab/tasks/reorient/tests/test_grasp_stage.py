@@ -238,6 +238,36 @@ def test_hand_shape_reward_weights_joints_by_importance(stage_env):
   cmd.invalidate_grasp_errors()
 
 
+def test_speed_limit_end_costs_a_drop(stage_env):
+  env = stage_env
+  env.reset()
+  rm = env.reward_manager
+  col = rm.active_terms.index("speed_limit_drop")
+  weight = rm.get_term_cfg("speed_limit_drop").weight
+  assert weight == rm.get_term_cfg("cage_escape").weight < 0
+  zero = torch.zeros(2, env.action_manager.total_action_dim)
+  env.step(zero)
+  assert torch.all(rm._step_reward[:, col] == 0.0)  # no speed-limit end
+  obj = env.scene["object"]
+  fling = torch.tensor([[5.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * 2)  # > 3 m/s
+  obj.write_root_link_velocity_to_sim(fling)
+  env.step(zero)
+  ended = env.termination_manager.get_term("object_speed_limit")
+  assert torch.all(ended)
+  params = rm.get_term_cfg("speed_limit_drop").params
+  m, scale = params["max_outside_steps"], params["drop_scale"]
+  assert m == rm.get_term_cfg("cage_escape").params.get("max_outside_steps", 10)
+  # The episode reset after the step zeroed the counter: recover its value at
+  # the reward from cage_escape's escalation c / m * scale (object outside
+  # the cage: it starts 4 cm above the hand).
+  cage = rm._step_reward[:, rm.active_terms.index("cage_escape")] / weight
+  assert torch.all(cage > 0)
+  c = cage * m / scale
+  want = scale / m * (m * (m + 1) - c * (c + 1)) / 2  # the rest of a drop
+  torch.testing.assert_close(rm._step_reward[:, col] / weight, want)
+  assert torch.all(want > 0)
+
+
 def test_grasp_errors_are_computed_once_per_sim_state(stage_env, monkeypatch):
   from wuji_mjlab.tasks.reorient.grasp_stage import command as command_module
 

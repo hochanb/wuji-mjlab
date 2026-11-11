@@ -344,6 +344,29 @@ def grasp_joint_proximity(
   return gate * _weighted_mean(per_joint.flatten(1), weights.flatten(1))
 
 
+def speed_limit_drop_penalty(
+  env,
+  term_name: str = "object_speed_limit",
+  max_outside_steps: int = 10,
+  drop_scale: float = 4.0,
+) -> torch.Tensor:
+  """[N] at an object-speed-limit termination, the cage-escape penalty a drop
+  would still have cost; 0 otherwise. Weight it like cage_escape.
+
+  A drop costs cage_escape's escalation ``k / M * drop_scale`` on each of
+  its ``M = max_outside_steps`` steps outside the cage (k = 1..M) before
+  cage_drop ends the episode. The speed limit ends it at once, which a
+  policy can trigger on purpose (flick the object) to escape that cost; this
+  charges the remaining steps ``k = c+1..M`` (c: the cage counter so far).
+  Terminations are computed before rewards, so this reads this step's."""
+  ended = env.termination_manager.get_term(term_name).float()
+  counter = read_cage_penalty_counter(env)
+  m = float(max(int(max_outside_steps), 1))
+  c = torch.zeros_like(ended) if counter is None else counter.clamp(0.0, m)
+  remaining = drop_scale / m * (m * (m + 1) - c * (c + 1)) / 2
+  return ended * remaining
+
+
 # -- terminations ------------------------------------------------------------
 def object_speed_limit(
   env,

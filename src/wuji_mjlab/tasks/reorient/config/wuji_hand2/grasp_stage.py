@@ -186,6 +186,18 @@ def build_stage_env_cfg(
   cfg.terminations["object_speed_limit"] = TerminationTermCfg(
     func=graphed_term(gmdp.object_speed_limit)
   )
+  # The speed limit ends the episode at once; charged like a drop (the
+  # cage-escape penalty its remaining outside steps would cost), so flicking
+  # the object is no way out of a failing episode.
+  cage = cfg.rewards["cage_escape"]
+  cfg.rewards["speed_limit_drop"] = RewardTermCfg(
+    func=gmdp.speed_limit_drop_penalty,
+    weight=cage.weight,
+    params={
+      "max_outside_steps": cage.params.get("max_outside_steps", 10),
+      "drop_scale": cage.params.get("drop_scale", 4.0),
+    },
+  )
   # The other plain-function observation and metric terms as well (each
   # checked against eager with WUJI_GRAPH_CHECK=1). Eager: action_jerk_rms
   # swaps its previous delta in a Python attribute every step; dr_params
