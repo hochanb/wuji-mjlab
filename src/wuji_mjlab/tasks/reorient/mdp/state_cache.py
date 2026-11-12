@@ -91,6 +91,19 @@ def constant(owner, name: str, compute: Callable[[], torch.Tensor]) -> torch.Ten
   return cache[name]
 
 
+def index(owner, ids, device):
+  """``ids`` (a SceneEntityCfg's joint / actuator / body ids) as something to
+  index a device tensor with: a slice as is, a list as a device tensor made
+  once per ``owner``. Indexing a CUDA tensor with a Python list copies the list
+  to the GPU on every call, which a CUDA graph capture does not allow."""
+  if isinstance(ids, slice):
+    return ids
+  key = tuple(int(i) for i in ids)
+  return constant(
+    owner, f"index{key}", lambda: torch.tensor(key, dtype=torch.long, device=device)
+  )
+
+
 def site_pose_w(entity, site_ids) -> torch.Tensor:
   """``entity.data.site_pose_w[:, site_ids]`` (num_envs, len(site_ids), 7),
   converting only those sites, once per physics state."""

@@ -10,6 +10,7 @@ from mjlab.managers.manager_base import ManagerTermBase
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
+from wuji_mjlab.tasks.reorient.mdp import state_cache
 from wuji_mjlab.tasks.reorient.mdp.runtime_state import get_fingertip_contact_binding
 from wuji_mjlab.tasks.reorient.reorient_constants import REORIENT_PALM_NORMAL_AXIS
 
@@ -87,8 +88,9 @@ def torque_saturation_ratio(
   threshold_frac: float = 0.9,
 ) -> torch.Tensor:
   robot = env.scene[asset_cfg.name]
-  torques = robot.data.actuator_force[:, asset_cfg.actuator_ids]
-  ctrl_ids = robot.indexing.ctrl_ids[asset_cfg.actuator_ids]
+  ids = state_cache.index(robot, asset_cfg.actuator_ids, env.device)
+  torques = robot.data.actuator_force[:, ids]
+  ctrl_ids = robot.indexing.ctrl_ids[ids]
   limits = env.sim.model.actuator_forcerange[:, ctrl_ids, :].abs().amax(dim=-1)
   saturated = (torques.abs() > threshold_frac * limits).float()
   return saturated.mean(dim=-1)
@@ -99,7 +101,9 @@ def joint_acceleration_rms(
   asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
 ) -> torch.Tensor:
   robot = env.scene[asset_cfg.name]
-  acc = robot.data.joint_acc[:, asset_cfg.joint_ids]
+  acc = robot.data.joint_acc[
+    :, state_cache.index(robot, asset_cfg.joint_ids, env.device)
+  ]
   return torch.sqrt(torch.mean(acc * acc, dim=-1))
 
 
@@ -108,7 +112,9 @@ def joint_vel_rms(
   asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
 ) -> torch.Tensor:
   robot = env.scene[asset_cfg.name]
-  vel = robot.data.joint_vel[:, asset_cfg.joint_ids]
+  vel = robot.data.joint_vel[
+    :, state_cache.index(robot, asset_cfg.joint_ids, env.device)
+  ]
   return torch.sqrt(torch.mean(vel * vel, dim=-1))
 
 

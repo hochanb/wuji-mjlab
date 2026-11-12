@@ -48,3 +48,15 @@ def test_cached_values_match_fresh_ones():
         )
   finally:
     env.close()
+
+
+def test_index_makes_id_lists_device_tensors_once():
+  class Owner:
+    pass
+
+  owner = Owner()
+  assert state_cache.index(owner, slice(None), "cpu") == slice(None)
+  a = state_cache.index(owner, [3, 1, 2], "cpu")
+  assert isinstance(a, torch.Tensor) and a.tolist() == [3, 1, 2]
+  assert state_cache.index(owner, (3, 1, 2), "cpu") is a  # made once
+  assert state_cache.index(owner, [0], "cpu").tolist() == [0]
