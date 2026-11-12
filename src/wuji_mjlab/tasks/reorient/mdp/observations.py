@@ -56,8 +56,9 @@ def joint_pos_target_error(
   asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
 ) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
-  joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-  soft_limits = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids]
+  ids = state_cache.index(asset, asset_cfg.joint_ids, env.device)
+  joint_pos = asset.data.joint_pos[:, ids]
+  soft_limits = asset.data.soft_joint_pos_limits[:, ids]
   center = 0.5 * (soft_limits[..., 0] + soft_limits[..., 1])
   half_range = 0.5 * (soft_limits[..., 1] - soft_limits[..., 0])
   normalized_pos = ((joint_pos - center) / (half_range + 1e-6)).clamp(-1.0, 1.0)
@@ -221,8 +222,9 @@ def joint_pos_limit_normalized(
   asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
 ) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
-  joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-  soft_limits = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids]
+  ids = state_cache.index(asset, asset_cfg.joint_ids, env.device)
+  joint_pos = asset.data.joint_pos[:, ids]
+  soft_limits = asset.data.soft_joint_pos_limits[:, ids]
   center = 0.5 * (soft_limits[..., 0] + soft_limits[..., 1])
   half_range = 0.5 * (soft_limits[..., 1] - soft_limits[..., 0])
   return ((joint_pos - center) / (half_range + 1e-6)).clamp(-1.0, 1.0)
