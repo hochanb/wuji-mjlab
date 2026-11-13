@@ -138,6 +138,8 @@ def build_stage_env_cfg(
       "pad_depth": training.hand_spec.pad_depth,
       "goal_grasp_sets": goal_sets,
       "hand": training.hand,
+      # A drop or a speed-limit end restarts on the same goal.
+      "keep_goal_on_terminations": ("cage_drop", "object_speed_limit"),
     }
   )
 
