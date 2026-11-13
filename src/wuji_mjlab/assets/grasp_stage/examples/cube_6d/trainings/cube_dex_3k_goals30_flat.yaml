@@ -1,0 +1,15 @@
+# Many-to-many, no curriculum: the cube_dex_3k grasps that survive the action
+# warmup (cube_dex_3k_stable, 2502 of 3000: src/tools/filter_init_grasps.py)
+# as initial states, the 30 goals of cube_dex_3k_goals30 (one per grasp type
+# first, spread out; src/tools/make_goal_type_curriculum.py) from the start,
+# 5000 iterations. Grasp sets not in git.
+version: 1
+hand: wuji_hand2_right
+encoding: {name: none, dim: 0}
+object_root: ../objects
+stages:
+  - name: goals30
+    objects: [cube]
+    init_grasps: {cube: [grasps/cube_dex_3k_stable/all]}
+    goal_grasps: {cube: [grasps/cube_dex_3k_goals30/goals_30]}
+    advance: {after_iterations: 5000}
