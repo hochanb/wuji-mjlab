@@ -10,7 +10,7 @@ Results are cached in ``tmp/grasp_synth/<name>.npz`` (``--load`` to view
 them again without generating).
 
 Usage (repo root):
-  pixi run python src/tools/view_grasp_synth.py [--mesh obj.obj --mass 0.1] \\
+  pixi run python src/tools/dexonomy/view_grasp_synth.py [--mesh obj.obj --mass 0.1] \\
     [--types pinch,tripod,five_tip,power] [--k 4] [--poses 6] [--port 8090] [--load]
 
 Without ``--mesh`` the object is the 54 mm reorient cube; poses are the cube

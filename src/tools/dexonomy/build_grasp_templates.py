@@ -11,7 +11,7 @@ B. Growth: Dexonomy over primitives of several sizes, the stapler and a few
 The library is written to --out (default: the package's templates.yaml).
 
 Usage (repo root):
-  pixi run python src/tools/build_grasp_templates.py \\
+  pixi run python src/tools/dexonomy/build_grasp_templates.py \\
     [--objaverse tmp/dexonomy_ref/objaverse/objaverse_5k/processed_data] \\
     [--n-objaverse 10] [--epochs 2] [--k 8] [--out ...]
 """

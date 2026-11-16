@@ -94,7 +94,7 @@ most `max_rounds` alignment rounds.
   thumb beside the index for adducted thumb. Refinement keeps the joints
   inside the bounds, and grasps outside them fail, so templates keep the
   type's shape.
-- `src/tools/build_grasp_templates.py` builds the library:
+- `src/tools/dexonomy/build_grasp_templates.py` builds the library:
   1. It drops templates outside their type's bounds.
   2. Seeds per taxonomy type on the objects that suit it (`TYPE_CATEGORIES`,
      e.g. books for parallel extension, pens for writing tripod, small

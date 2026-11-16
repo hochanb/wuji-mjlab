@@ -21,7 +21,7 @@ q_scale, each scale the median pairwise value. Writes
 every stage (not in git: the sets).
 
 Usage (repo root):
-  pixi run python src/tools/make_goal_type_curriculum.py \\
+  pixi run python src/tools/dexonomy/make_goal_type_curriculum.py \\
     --object-dir src/wuji_mjlab/assets/grasp_stage/examples/cube_6d/objects/cube \\
     --src cube_dex_3k --name cube_dex_3k_goals30 --sizes 1 3 10 30 \\
     --first 3730 --iterations 1250
@@ -136,7 +136,7 @@ def main() -> None:
     f"# Many-to-many goal curriculum: all {len(grasps)} {a.src} grasps as initial\n"
     f"# states; goal sets of {', '.join(map(str, a.sizes))} grasps (one per grasp type\n"
     "# first, spread out by farthest-point sampling; nested), from\n"
-    "# src/tools/make_goal_type_curriculum.py; grasp sets not in git.\n"
+    "# src/tools/dexonomy/make_goal_type_curriculum.py; grasp sets not in git.\n"
     "version: 1\n"
     f"hand: {HAND}\n"
     "encoding: {name: none, dim: 0}\n"

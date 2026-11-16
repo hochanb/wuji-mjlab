@@ -7,14 +7,12 @@ Two steps:
    ``generate_many``; repeated per ``--seeds`` and merged into one pool
    (``.npz``: object pose in the wrist frame, joints, squeeze targets, type).
 2. ``sets``: N grasps drawn at random from one or more pools, converted to the
-   grasp-stage format and written as grasp sets plus training files:
+   grasp-stage format and written as the grasp set ``<name>/all`` with its
+   per-grasp metadata (``grasp_type``, ``pool_row``, ``joint_target``;
+   ``schema.save_grasp_meta``, source "dexonomy").
 
-   - ``<name>/all``: the N grasps (``--many-to-many``: init = goal = all,
-     one stage, ``trainings/<name>_m2m.yaml``);
-   - ``--many-to-one K``: one goal grasp (``<name>/goal``; the medoid of the
-     object poses, or ``--goal-index``) and the other grasps as initial
-     states in K cumulative stages ``<name>/init_stage1..K``, nearest object
-     pose to the goal first (``trainings/<name>_m2o_curriculum.yaml``).
+Training files (many-to-one curriculum, many-to-many) and their subsets come
+from src/tools/make_grasp_trainings.py, which works on any grasp set.
 
 Grasp-stage fields: object pose in the palm frame and finger joints from the
 grasp (``joint_pos``, just touching); tip targets are the fingertip pad
@@ -27,12 +25,13 @@ fingers whose pad (``tip_sensor`` link) touches the object (else 0;
 
 Usage (repo root):
   OBJ=src/wuji_mjlab/assets/grasp_stage/examples/cube_6d/objects/cube
-  pixi run python src/tools/make_dexonomy_grasp_sets.py synth --object cube \\
+  pixi run python src/tools/dexonomy/make_dexonomy_grasp_sets.py synth --object cube \\
     --k 400 --seeds 0 --out tmp/dex_cube_pool.npz
-  pixi run python src/tools/make_dexonomy_grasp_sets.py sets \\
+  pixi run python src/tools/dexonomy/make_dexonomy_grasp_sets.py sets \\
     --pool tmp/dex_cube_pool.npz --object-dir $OBJ --name cube_dex_3k \\
-    --count 3000 --many-to-one 5 --many-to-many --tip-weights none \\
-    --joint-weights contact --training
+    --count 3000 --tip-weights none --joint-weights contact
+  pixi run python src/tools/make_grasp_trainings.py --object-dir $OBJ \\
+    --src cube_dex_3k --many-to-one 5 --many-to-many --write
 """
 
 from __future__ import annotations
@@ -165,11 +164,11 @@ def _tip_targets(obj, object_pose: np.ndarray, joint_pos: np.ndarray):
   whether its pad touches the object and whether any of its links does
   (within 2 mm)."""
   import mujoco
-  from wuji_mjlab.grasp_synth import GraspSynthCfg, GraspSynthesizer
-  from wuji_mjlab.grasp_synth.templates import template_from_grasp
-  from wuji_mjlab.tasks.reorient.config.wuji_hand2.hand2_constants import (
+  from wuji_mjlab.assets.robots.wuji_hand2.hand2_geometry import (
     HAND2_TIP_PAD_POINTS,
   )
+  from wuji_mjlab.grasp_synth import GraspSynthCfg, GraspSynthesizer
+  from wuji_mjlab.grasp_synth.templates import template_from_grasp
 
   syn = GraspSynthesizer(GraspSynthCfg(num_worlds=64))
   syn._setup(obj, 64)
@@ -217,38 +216,11 @@ def _grasp_set(pool: dict, rows: np.ndarray, tips, joint_w: str, tip_w: str):
   )
 
 
-def _pose_dist(pose: np.ndarray, ref: np.ndarray, pos_scale: float, rot_scale: float):
-  return (
-    np.linalg.norm(pose[..., :3] - ref[..., :3], axis=-1) / pos_scale
-    + _rot_dist(pose[..., 3:], ref[..., 3:]) / rot_scale
-  )
-
-
-def _stage(name, obj, init, goal, iterations) -> str:
-  return (
-    f"  - name: {name}\n"
-    f"    objects: [{obj}]\n"
-    f"    init_grasps: {{{obj}: [{init}]}}\n"
-    f"    goal_grasps: {{{obj}: [{goal}]}}\n"
-    f"    advance: {{after_iterations: {iterations}}}\n"
-  )
-
-
-def _training(header: str, stages: list[str]) -> str:
-  return (
-    f"{header}"
-    "version: 1\n"
-    f"hand: {HAND}\n"
-    "encoding: {name: none, dim: 0}\n"
-    "object_root: ../objects\n"
-    "stages:\n" + "".join(stages)
-  )
-
-
 def sets(args) -> None:
   from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
+    GraspMeta,
     hand_joint_limits,
-    load_training,
+    save_grasp_meta,
     save_grasp_set_npz,
   )
 
@@ -292,85 +264,24 @@ def sets(args) -> None:
 
   obj_dir = Path(args.object_dir)
   root = obj_dir / "grasps" / args.name
-  rel = f"grasps/{args.name}"
   save_grasp_set_npz(root / "all", everything, HAND)
-  np.savez(
-    root / "meta.npz",
-    pool_row=rows,
-    grasp_type=pool["grasp_type"][rows],
-    joint_target=pool["joint_target"][rows],
+  save_grasp_meta(
+    root / "all",
+    GraspMeta(
+      {
+        "grasp_type": pool["grasp_type"][rows],
+        "pool_row": rows,
+        "joint_target": pool["joint_target"][rows],
+      },
+      source="dexonomy",
+    ),
+    len(rows),
   )
-  trainings = obj_dir.parent.parent / "trainings"
-  written = []
-  header = (
-    f"# Dexonomy {obj_name} grasps ({len(rows)}, {len(types)} grasp types) from\n"
-    "# src/tools/make_dexonomy_grasp_sets.py; grasp sets not in git.\n"
+  print(f"wrote {root / 'all'} ({len(rows)} grasps) and its metadata")
+  print(
+    "training files and m2o / m2m subsets: src/tools/make_grasp_trainings.py "
+    f"--object-dir {args.object_dir} --src {args.name} ..."
   )
-
-  if args.many_to_many:
-    path = trainings / f"{args.name}_m2m.yaml"
-    stage = _stage("m2m", obj_name, f"{rel}/all", f"{rel}/all", args.iterations)
-    written.append((path, _training(header + "# many-to-many, one stage.\n", [stage])))
-
-  if args.many_to_one:
-    pose = pool["object_pose"][rows]
-    pos_scale = np.median(
-      np.linalg.norm(pose[:, None, :3] - pose[None, :, :3], axis=-1)
-    )
-    rot_scale = np.median(_rot_dist(pose[:, None, 3:], pose[None, :, 3:]))
-    if args.goal_index is None:
-      dist = _pose_dist(pose[:, None], pose[None], pos_scale, rot_scale)
-      goal = int(dist.mean(1).argmin())  # medoid
-    else:
-      goal = args.goal_index
-    goal_rows = np.array([rows[goal]])
-    save_grasp_set_npz(
-      root / "goal",
-      _grasp_set(pool, goal_rows, tips, args.joint_weights, args.tip_weights),
-      HAND,
-    )
-    others = np.delete(np.arange(len(rows)), goal)
-    d = _pose_dist(pose[others], pose[goal], pos_scale, rot_scale)
-    order = others[np.argsort(d, kind="stable")]
-    k = args.many_to_one
-    stages = []
-    print(
-      f"many-to-one goal: pool row {rows[goal]} ({pool['grasp_type'][rows[goal]]}); "
-      f"distance = |dp| / {pos_scale * 1000:.1f} mm + angle / {math.degrees(rot_scale):.0f} deg"
-    )
-    for s in range(1, k + 1):
-      n = round(len(order) * s / k)
-      sub = np.sort(order[:n])
-      save_grasp_set_npz(
-        root / f"init_stage{s}",
-        _grasp_set(pool, rows[sub], tips, args.joint_weights, args.tip_weights),
-        HAND,
-      )
-      dp = np.linalg.norm(pose[sub, :3] - pose[goal, :3], axis=-1)
-      da = np.degrees(_rot_dist(pose[sub, 3:], pose[goal, 3:]))
-      print(
-        f"  stage{s}: {n:4d} init, max |dp| {dp.max() * 1000:5.1f} mm, "
-        f"max angle {da.max():5.1f} deg (median {np.median(dp) * 1000:.1f} mm, "
-        f"{np.median(da):.0f} deg)"
-      )
-      stages.append(
-        _stage(
-          f"stage{s}", obj_name, f"{rel}/init_stage{s}", f"{rel}/goal", args.iterations
-        )
-      )
-    path = trainings / f"{args.name}_m2o_curriculum.yaml"
-    note = (
-      f"# many-to-one curriculum: one goal, {k} stages adding initial grasps by\n"
-      "# object pose distance to the goal (nearest first).\n"
-    )
-    written.append((path, _training(header + note, stages)))
-
-  if args.training:
-    for path, text in written:
-      path.parent.mkdir(parents=True, exist_ok=True)
-      path.write_text(text)
-      load_training(path)  # validates every stage, incl. joint limits
-      print(f"wrote {path}")
 
 
 def main() -> None:
@@ -385,16 +296,12 @@ def main() -> None:
   a.add_argument("--out", required=True)
   a.set_defaults(fn=synth)
 
-  b = sub.add_parser("sets", help="pool(s) -> grasp sets and training files")
+  b = sub.add_parser("sets", help="pool(s) -> the grasp set <name>/all")
   b.add_argument("--pool", nargs="+", required=True)
   b.add_argument("--object-dir", required=True)
   b.add_argument("--name", required=True)
   b.add_argument("--count", type=int, default=3000)
   b.add_argument("--seed", type=int, default=0)
-  b.add_argument("--many-to-one", type=int, default=0, metavar="STAGES")
-  b.add_argument("--goal-index", type=int, help="many-to-one goal (default: medoid)")
-  b.add_argument("--many-to-many", action="store_true")
-  b.add_argument("--iterations", type=int, default=1000, help="per stage")
   b.add_argument(
     "--joint-weights",
     choices=("contact", "all"),
@@ -409,7 +316,6 @@ def main() -> None:
   )
   b.add_argument("--dedupe-pos", type=float, default=0.005)
   b.add_argument("--dedupe-rot", type=float, default=10.0, help="deg")
-  b.add_argument("--training", action="store_true", help="write training files")
   b.set_defaults(fn=sets)
   args = ap.parse_args()
   args.fn(args)

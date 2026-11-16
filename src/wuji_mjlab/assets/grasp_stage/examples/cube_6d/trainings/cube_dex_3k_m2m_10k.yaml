@@ -1,5 +1,5 @@
 # Dexonomy cube grasps (3000, 26 grasp types) from
-# src/tools/make_dexonomy_grasp_sets.py; grasp sets not in git.
+# src/tools/dexonomy/make_dexonomy_grasp_sets.py; grasp sets not in git.
 # many-to-many, one stage, 10k iterations (large-batch run).
 version: 1
 hand: wuji_hand2_right
