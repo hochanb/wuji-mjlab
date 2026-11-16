@@ -4,7 +4,8 @@ reset ``--trials`` times in the stage's env (domain randomization on) and
 fails a trial if, by the end of the warmup, the object left the cage, hit
 the speed limit, or moved more than ``--max-move`` from where it started in
 the palm frame. Grasps failing more than ``--max-fails`` trials go; the rest
-are saved as ``<grasps>/<out>/`` next to the source set (not in git).
+are saved as ``<grasps>/<out>/`` next to the source set (not in git), with
+their per-grasp metadata when the source sets have it.
 
 usage (repo root):
   pixi run python src/tools/filter_init_grasps.py --training <training.yaml> \\
@@ -25,9 +26,13 @@ from mjlab.utils.lab_api.math import quat_apply_inverse
 from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import build_stage_env_cfg
 from wuji_mjlab.tasks.reorient.grasp_stage import mdp as gmdp
 from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
+  GraspMeta,
   GraspSet,
+  load_grasp_meta,
+  load_grasp_set,
   load_grasp_sets,
   load_training,
+  save_grasp_meta,
   save_grasp_set_npz,
 )
 from wuji_mjlab.tasks.reorient.mdp.actions import warmup_steps
@@ -127,6 +132,10 @@ def main() -> None:
     grasps.ids[rows], *(getattr(grasps, f)[rows] for f in GraspSet.ARRAYS)
   )
   save_grasp_set_npz(out, subset, training.hand)
+  # Per-grasp metadata follows the kept grasps when every source set has it.
+  metas = [load_grasp_meta(f, len(load_grasp_set(f, training.hand))) for f in folders]
+  if all(m is not None for m in metas):
+    save_grasp_meta(out, GraspMeta.concat(metas).subset(rows), len(rows))
   print(f"kept {len(rows)} / {n} -> {out}")
 
 

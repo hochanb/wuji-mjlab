@@ -347,6 +347,103 @@ def load_grasp_sets(folders, hand: str) -> GraspSet:
   return sets[0] if len(sets) == 1 else GraspSet.concat(sets)
 
 
+# Optional per-grasp metadata of a grasp set: ``<set folder>/meta.npz``, one
+# row per grasp in the set's order, written by whatever made the set (grasp
+# synthesizers, subset tools). Training never reads it; tools may. Arrays of
+# any dtype; reserved scalars: ``meta_version`` and ``source`` (the generator,
+# e.g. "dexonomy"). Keys tools rely on:
+#   grasp_type (str): the grasp type the grasp was made as (e.g. a GRASP
+#     taxonomy name); tools that pick grasps per type need it.
+# Sets made before this lived with a ``meta.npz`` next to the ``all`` set's
+# folder (``grasps/<name>/meta.npz`` for ``grasps/<name>/all``); that location
+# is still read for an ``all`` set.
+GRASP_META_FILE = "meta.npz"
+GRASP_META_VERSION = 1
+GRASP_META_KEYS = {"grasp_type": "str per grasp: the grasp type it was made as"}
+_META_SCALARS = ("meta_version", "source")
+
+
+@dataclass(frozen=True)
+class GraspMeta:
+  """Per-grasp metadata of a grasp set (``rows``: name -> array, one row per
+  grasp) and the generator that made it."""
+
+  rows: dict[str, np.ndarray]
+  source: str | None = None
+
+  def __len__(self) -> int:
+    return len(next(iter(self.rows.values()))) if self.rows else 0
+
+  def __getitem__(self, key: str) -> np.ndarray:
+    if key not in self.rows:
+      raise KeyError(
+        f"grasp metadata has no {key!r} (has {sorted(self.rows)}); "
+        + GRASP_META_KEYS.get(key, "")
+      )
+    return self.rows[key]
+
+  def subset(self, rows) -> GraspMeta:
+    return GraspMeta({k: v[rows] for k, v in self.rows.items()}, self.source)
+
+  @staticmethod
+  def concat(metas: list[GraspMeta]) -> GraspMeta:
+    keys = set(metas[0].rows)
+    if any(set(m.rows) != keys for m in metas):
+      raise GraspStageError("grasp metadata of the sets have different keys")
+    sources = {m.source for m in metas}
+    return GraspMeta(
+      {k: np.concatenate([m.rows[k] for m in metas]) for k in sorted(keys)},
+      sources.pop() if len(sources) == 1 else None,
+    )
+
+
+def save_grasp_meta(folder: str | Path, meta: GraspMeta, n_grasps: int) -> Path:
+  """Write ``meta`` as ``<folder>/meta.npz`` next to that folder's grasp set
+  of ``n_grasps`` grasps (every array must have one row per grasp)."""
+  for k, v in meta.rows.items():
+    if k in _META_SCALARS:
+      raise GraspStageError(f"grasp metadata: {k!r} is reserved")
+    if len(v) != n_grasps:
+      raise GraspStageError(
+        f"grasp metadata {k!r}: {len(v)} rows for a set of {n_grasps} grasps"
+      )
+  folder = Path(folder)
+  folder.mkdir(parents=True, exist_ok=True)
+  path = folder / GRASP_META_FILE
+  extra = {"source": np.str_(meta.source)} if meta.source is not None else {}
+  np.savez(
+    path,
+    meta_version=np.int64(GRASP_META_VERSION),
+    **extra,
+    **{k: np.asarray(v) for k, v in meta.rows.items()},
+  )
+  return path
+
+
+def load_grasp_meta(
+  folder: str | Path, n_grasps: int | None = None
+) -> GraspMeta | None:
+  """The metadata of the grasp set in ``folder``, or None if it has none.
+  With ``n_grasps``, every array is checked to have that many rows."""
+  folder = Path(folder)
+  path = folder / GRASP_META_FILE
+  if not path.is_file() and folder.name == "all":  # sets made before meta files
+    path = folder.parent / GRASP_META_FILE
+  if not path.is_file():
+    return None
+  with np.load(path, allow_pickle=False) as z:
+    rows = {k: z[k] for k in z.files if k not in _META_SCALARS}
+    source = str(z["source"]) if "source" in z.files else None
+  meta = GraspMeta(rows, source)
+  if n_grasps is not None:
+    for k, v in rows.items():
+      if len(v) != n_grasps:
+        raise GraspStageError(
+          f"{path}: metadata {k!r} has {len(v)} rows, the set {n_grasps} grasps"
+        )
+  return meta
+
+
 def save_grasp_set_npz(folder: str | Path, grasps: GraspSet, hand: str) -> Path:
   """Write ``grasps`` as ``<folder>/grasps.npz`` (validated on load)."""
   folder = Path(folder)

@@ -1,8 +1,11 @@
 """Goal-set curriculum over grasp types: nested goal sets of growing size
 (e.g. 1, 3, 10, 30) drawn from a grasp set, one grasp per grasp type first.
 
-From ``<grasps>/<src>/all`` and its ``meta.npz`` (grasp type per row, as
-make_dexonomy_grasp_sets writes them):
+Dexonomy-dependent: needs the set's per-grasp ``grasp_type`` metadata
+(``schema.load_grasp_meta``), which make_dexonomy_grasp_sets writes; sets
+from generators without grasp types do not qualify.
+
+From ``<grasps>/<src>/all`` and its grasp types:
 
 1. one representative per grasp type: the type's medoid under the distance
    below (``--first`` replaces its type's representative);
@@ -13,8 +16,9 @@ make_dexonomy_grasp_sets writes them):
 
 Distance between grasps: |dp| / pos_scale + angle / rot_scale + mean |dq| /
 q_scale, each scale the median pairwise value. Writes
-``<grasps>/<name>/goals_<k>`` and ``<trainings>/<name>_curriculum.yaml``
-with ``all`` as the initial grasps in every stage (not in git: the sets).
+``<grasps>/<name>/goals_<k>`` (with their metadata) and
+``<trainings>/<name>_curriculum.yaml`` with ``all`` as the initial grasps in
+every stage (not in git: the sets).
 
 Usage (repo root):
   pixi run python src/tools/make_goal_type_curriculum.py \\
@@ -31,7 +35,9 @@ from pathlib import Path
 import numpy as np
 from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
   GraspSet,
+  load_grasp_meta,
   load_grasp_set,
+  save_grasp_meta,
   save_grasp_set_npz,
 )
 
@@ -70,8 +76,13 @@ def main() -> None:
   obj_dir = Path(a.object_dir)
   src = obj_dir / "grasps" / a.src
   grasps = load_grasp_set(src / "all", HAND)
-  types = np.load(src / "meta.npz", allow_pickle=True)["grasp_type"].astype(str)
-  assert len(types) == len(grasps), "meta.npz rows must match the 'all' set"
+  meta = load_grasp_meta(src / "all", len(grasps))
+  if meta is None or "grasp_type" not in meta.rows:
+    raise SystemExit(
+      f"{src / 'all'}: no per-grasp grasp_type metadata (Dexonomy sets from "
+      "make_dexonomy_grasp_sets.py have it)"
+    )
+  types = meta["grasp_type"].astype(str)
   dist = _distances(grasps)
 
   reps = {}
@@ -100,9 +111,9 @@ def main() -> None:
   stages = []
   for k in a.sizes:
     rows = order[:k]
-    save_grasp_set_npz(
-      obj_dir / "grasps" / a.name / f"goals_{k}", _subset(grasps, rows), HAND
-    )
+    out = obj_dir / "grasps" / a.name / f"goals_{k}"
+    save_grasp_set_npz(out, _subset(grasps, rows), HAND)
+    save_grasp_meta(out, meta.subset(rows), k)
     kinds = sorted({types[r] for r in rows})
     print(
       f"goals_{k}: {k} grasps, {len(kinds)} types: {', '.join(kinds) if k <= 10 else '...'}"
