@@ -8,13 +8,14 @@ default (``wrist=True`` adds the actuated 6-DoF wrist). The goal
 command draws a goal grasp per episode; the reset puts the hand and object
 in an initial grasp. Observations add the masked tip errors, the grasp
 weights, the joint goal and the object encoding; rewards add the weighted
-tip and joint terms; the object speed limit guards against mujoco-warp's
+tip and joint terms (no cage-pose penalty); the object speed limit guards against mujoco-warp's
 free-body spin-up.
 """
 
 from __future__ import annotations
 
 from dataclasses import fields
+from functools import partial
 from pathlib import Path
 
 from mjlab.managers.event_manager import EventTermCfg
@@ -72,6 +73,26 @@ _JOINT_REWARD_PARAMS = {
 }
 
 
+# Hand-object contacts: condim 6 (sliding, torsional and rolling friction)
+# on the hand's collision geoms, which set the contact parameters (priority
+# 1 over the object). Sliding friction drawn per env in [1.0, 2.0] (the
+# middle without domain randomization); torsional 0.005 and rolling 0.0001
+# stay at the hand defaults.
+_HAND_CONDIM = 6
+_HAND_SLIDING_FRICTION = (1.0, 2.0)
+
+
+def _hand_contact_spec(spec_fn, condim: int, sliding: float):
+  """``spec_fn()`` with every colliding geom at ``condim`` and sliding
+  friction ``sliding``."""
+  spec = spec_fn()
+  for geom in spec.geoms:
+    if geom.contype or geom.conaffinity:
+      geom.condim = condim
+      geom.friction[0] = sliding
+  return spec
+
+
 def build_stage_env_cfg(
   training: TrainingSpec, stage_index: int, play: bool = False, wrist: bool = False
 ):
@@ -85,6 +106,14 @@ def build_stage_env_cfg(
   if wrist:
     cfg = _with_wrist(cfg)
   cfg.curriculum.pop("goal_rotation", None)  # goals come from the grasp set
+
+  robot = cfg.scene.entities["robot"]
+  robot.spec_fn = partial(
+    _hand_contact_spec, robot.spec_fn, _HAND_CONDIM, sum(_HAND_SLIDING_FRICTION) / 2
+  )
+  if "robot_friction" in cfg.events:  # domain randomization (not in play)
+    friction = cfg.events["robot_friction"].params
+    friction.update(operation="abs", ranges=_HAND_SLIDING_FRICTION, axes=[0])
 
   # Object.
   x, y, z = REORIENT_HAND2_CUBE_INIT_POS["right"]
@@ -109,6 +138,8 @@ def build_stage_env_cfg(
       "pad_depth": training.hand_spec.pad_depth,
       "goal_grasp_sets": goal_sets,
       "hand": training.hand,
+      # A drop or a speed-limit end restarts on the same goal.
+      "keep_goal_on_terminations": ("cage_drop", "object_speed_limit"),
     }
   )
 
@@ -183,6 +214,9 @@ def build_stage_env_cfg(
     weight=_JOINT_REWARD_WEIGHT,
     params={**command, **_JOINT_REWARD_PARAMS},
   )
+  # The reorient task's pull towards the cage pose works against goal hand
+  # shapes; the hand shape is rewarded by grasp_joint alone.
+  cfg.rewards.pop("hand_pose", None)
   cfg.terminations["object_speed_limit"] = TerminationTermCfg(
     func=graphed_term(gmdp.object_speed_limit)
   )

@@ -268,6 +268,38 @@ def test_speed_limit_end_costs_a_drop(stage_env):
   assert torch.all(want > 0)
 
 
+def test_hand_contacts_condim_6_and_sliding_friction_range():
+  from mjlab.envs import ManagerBasedRlEnv
+  from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
+    example_stage_env_cfg,
+  )
+
+  for play in (True, False):
+    cfg = example_stage_env_cfg(play=play)
+    cfg.scene.num_envs = 4
+    env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
+    try:
+      m = env.sim.mj_model
+      hand = [
+        g
+        for g in range(m.ngeom)
+        if m.body(int(m.geom_bodyid[g])).name.startswith("robot/")
+        and (m.geom_contype[g] or m.geom_conaffinity[g])
+      ]
+      assert set(m.geom_condim[hand].tolist()) == {6}
+      friction = env.sim.model.geom_friction[..., hand, :].reshape(-1, 3)
+      sliding = friction[:, 0]
+      if play:  # no randomization: the middle of the range
+        torch.testing.assert_close(sliding, torch.full_like(sliding, 1.5))
+      else:
+        assert torch.all((sliding >= 1.0) & (sliding <= 2.0))
+        assert sliding.std() > 0.1
+      torch.testing.assert_close(friction[:, 1], torch.full_like(sliding, 0.005))
+      torch.testing.assert_close(friction[:, 2], torch.full_like(sliding, 1e-4))
+    finally:
+      env.close()
+
+
 def test_grasp_errors_are_computed_once_per_sim_state(stage_env, monkeypatch):
   from wuji_mjlab.tasks.reorient.grasp_stage import command as command_module
 
@@ -581,3 +613,41 @@ def test_cube_pose_curriculum():
     dot = torch.from_numpy(init.object_quat * goal.object_quat).double().sum(-1)
     angle = torch.rad2deg(2 * torch.acos(dot.abs().clamp(max=1.0)))
     assert angle.max() <= 72 * k + 1e-3
+
+
+def test_grasp_metadata_round_trip_validate_and_legacy_location(tmp_path):
+  import numpy as np
+  from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
+    GraspMeta,
+    GraspStageError,
+    load_grasp_meta,
+    save_grasp_meta,
+  )
+
+  meta = GraspMeta(
+    {"grasp_type": np.array(["power", "pinch", "power"]), "pool_row": np.arange(3)},
+    source="dexonomy",
+  )
+  folder = tmp_path / "grasps" / "set" / "all"
+  save_grasp_meta(folder, meta, 3)
+  got = load_grasp_meta(folder, 3)
+  assert got.source == "dexonomy" and len(got) == 3
+  np.testing.assert_array_equal(got["grasp_type"], meta.rows["grasp_type"])
+  assert list(got.subset([2, 0])["pool_row"]) == [2, 0]
+  both = GraspMeta.concat([got, got.subset([1])])
+  assert list(both["grasp_type"]) == ["power", "pinch", "power", "pinch"]
+  with pytest.raises(GraspStageError, match="rows"):
+    load_grasp_meta(folder, 4)  # the set has another size
+  with pytest.raises(GraspStageError, match="rows"):
+    save_grasp_meta(tmp_path / "bad", meta, 2)
+  with pytest.raises(GraspStageError, match="reserved"):
+    save_grasp_meta(tmp_path / "bad", GraspMeta({"source": np.arange(3)}), 3)
+  with pytest.raises(KeyError, match="grasp_type"):
+    GraspMeta({"pool_row": np.arange(3)})["grasp_type"]
+  assert load_grasp_meta(tmp_path / "nothing") is None
+  # Sets made before meta files: meta.npz next to the 'all' set's folder.
+  legacy = tmp_path / "old" / "all"
+  legacy.mkdir(parents=True)
+  np.savez(legacy.parent / "meta.npz", grasp_type=np.array(["a", "b"]))
+  assert list(load_grasp_meta(legacy, 2)["grasp_type"]) == ["a", "b"]
+  assert load_grasp_meta(legacy.parent / "goals_1") is None

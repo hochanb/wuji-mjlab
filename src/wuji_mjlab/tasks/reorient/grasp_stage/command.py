@@ -158,6 +158,31 @@ class GraspGoalCommand(InHandReorientCommand):
     idx, rows = sample_rows(self._goal_tables, env_ids.numel(), self.device)
     self._set_goal_rows(env_ids, idx, rows)
 
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    keep = self._failed(env_ids)
+    kept_ids = env_ids[keep] if keep is not None else env_ids[:0]
+    kept_idx = self.goal_index[kept_ids].cpu()
+    super()._resample_command(env_ids)  # draws goals, resets the counters
+    if kept_ids.numel() > 0:
+      self._set_goal_rows(
+        kept_ids, kept_idx, gather_rows(self._goal_tables, kept_idx, self.device)
+      )
+
+  def _failed(self, env_ids: torch.Tensor) -> torch.Tensor | None:
+    """[len(env_ids)] episodes ended by a ``keep_goal_on_terminations`` term
+    (the command resets before the termination manager clears them)."""
+    names = self.cfg.keep_goal_on_terminations
+    if not names or not hasattr(self._env, "termination_manager"):
+      return None
+    tm = self._env.termination_manager
+    active = [n for n in names if n in tm.active_terms]
+    if not active:
+      return None
+    failed = torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+    for name in active:
+      failed |= tm.get_term(name)[env_ids].bool()
+    return failed
+
   # -- errors ----------------------------------------------------------------
   def _grasp_errors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if state_cache.bypassed():  # graph capture: no shared buffers
@@ -300,6 +325,10 @@ class GraspGoalCommandCfg(InHandReorientCommandCfg):
   # translucent ghost; alpha 0 hides it (also a checkbox in the viser panel).
   goal_hand_alpha: float = 0.35
   goal_hand_color: tuple[float, float, float, float] = (0.2, 0.8, 0.4, 1.0)
+  # Episodes ended by these termination terms (failures: a drop, a flick)
+  # restart on the same goal; others (time out, the first reset) draw a new
+  # one. Without it the goals a policy fails on fastest leave the data.
+  keep_goal_on_terminations: tuple[str, ...] = ()
 
   def build(self, env) -> GraspGoalCommand:
     return GraspGoalCommand(self, env)
