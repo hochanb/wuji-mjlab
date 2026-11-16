@@ -21,13 +21,14 @@ import mujoco
 import numpy as np
 import yaml
 
-from wuji_mjlab.tasks.reorient.config.wuji_hand2.hand2_constants import (
+from wuji_mjlab.assets.robots.wuji_hand2.hand2_geometry import (
+  HAND2_TIP_PAD_DEPTH,
   HAND2_TIP_PAD_POINTS,
 )
 
 # Depth of HAND2_TIP_PAD_POINTS inside the pad; the same depth is used for the
 # phalanx points.
-PAD_DEPTH = 0.005
+PAD_DEPTH = HAND2_TIP_PAD_DEPTH
 # Palmar side of every finger link (and tip site) frame.
 _PALMAR = np.array([0.0, 1.0, 0.0])
 

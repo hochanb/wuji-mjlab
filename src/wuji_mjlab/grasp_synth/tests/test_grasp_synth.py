@@ -2,16 +2,10 @@
 # Copyright 2026 Wuji Technology Co., Ltd.
 from __future__ import annotations
 
-from functools import partial
-
 import mujoco
 import numpy as np
 import pytest
 import torch
-from wuji_mjlab.assets.robots.wuji_hand2.wuji_hand2_cfg import (
-  _get_spec,
-  wuji_hand2_xml_path,
-)
 from wuji_mjlab.grasp_synth import (
   GRASP_TYPES,
   GraspObject,
@@ -19,10 +13,8 @@ from wuji_mjlab.grasp_synth import (
   GraspSynthesizer,
 )
 from wuji_mjlab.grasp_synth.grasp_types import resolve_contact
+from wuji_mjlab.grasp_synth.synth import hand2_synth_spec
 from wuji_mjlab.grasp_synth.wrench import balance_contact_forces
-from wuji_mjlab.tasks.reorient.config.wuji_hand2.hand2_constants import (
-  get_hand2_reorient_spec,
-)
 
 # 54 mm cube in front of the palm (the reorient cube spawn, palm frame).
 CUBE_POS = (0.0042, 0.0791, -0.0673)
@@ -60,7 +52,7 @@ def test_balance_one_sided_contacts_do_not():
 
 @pytest.mark.parametrize("name", sorted(GRASP_TYPES))
 def test_grasp_type_contacts_resolve(name):
-  spec = get_hand2_reorient_spec(partial(_get_spec, wuji_hand2_xml_path("right")))
+  spec = hand2_synth_spec()
   model = spec.compile()
   for c in GRASP_TYPES[name].contacts:
     r = resolve_contact(model, c)
@@ -197,7 +189,7 @@ def test_template_library_save_load_and_default_protected(tmp_path):
 def test_taxonomy_types_resolve_with_sides():
   from wuji_mjlab.grasp_synth.grasp_types import TAXONOMY
 
-  spec = get_hand2_reorient_spec(partial(_get_spec, wuji_hand2_xml_path("right")))
+  spec = hand2_synth_spec()
   model = spec.compile()
   lo, hi = model.jnt_range[:20].T
   assert len(TAXONOMY) == 33

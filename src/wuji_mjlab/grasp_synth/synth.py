@@ -54,12 +54,10 @@ import torch
 import warp as wp
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 
+from wuji_mjlab.assets.robots.wuji_hand2.hand2_model import get_hand2_model_spec
 from wuji_mjlab.assets.robots.wuji_hand2.wuji_hand2_cfg import (
   _get_spec,
   wuji_hand2_xml_path,
-)
-from wuji_mjlab.tasks.reorient.config.wuji_hand2.hand2_constants import (
-  get_hand2_reorient_spec,
 )
 
 from .grasp_types import GRASP_TYPES, PAD_DEPTH, GraspType, resolve_contact
@@ -68,6 +66,25 @@ from .wrench import balance_contact_forces
 
 NUM_JOINTS = 20
 PALM_BODY = "right_palm_link"
+
+
+def hand2_synth_spec() -> mujoco.MjSpec:
+  """The hand for synthesis: the Wuji Hand 2 on its calibration rig
+  (``hand2_model``, the hand the policies train with) and the model options
+  the grasp sets were made with (timestep, solver iterations and line
+  search are overridden per simulation by ``GraspSynthCfg``)."""
+  spec = get_hand2_model_spec(partial(_get_spec, wuji_hand2_xml_path("right")))
+  opt = spec.option
+  opt.timestep = 0.01
+  opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+  opt.iterations = 5
+  opt.ls_iterations = 8
+  opt.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+  opt.tolerance = 1e-8
+  opt.disableflags = int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
+  return spec
+
+
 # Wrist (palm) orientation in the training env (WujiHand2_ReorientPosWrist /
 # GraspStage) at reset: palm up, pitched 10 deg by the mount.
 TRAINING_WRIST_QUAT_W = (0.541675, 0.45452, 0.45452, 0.541675)
@@ -263,7 +280,7 @@ class GraspSynthesizer:
   # Model / simulation.
 
   def _build_model(self, obj: GraspObject) -> mujoco.MjModel:
-    spec = get_hand2_reorient_spec(partial(_get_spec, wuji_hand2_xml_path("right")))
+    spec = hand2_synth_spec()
     palm = spec.body(PALM_BODY)
     palm.pos, palm.quat = [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
     body = spec.worldbody.add_body(name="object")
