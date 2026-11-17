@@ -67,6 +67,16 @@ def _reorient_hand2_50hz_env_cfg(num_envs: int = 8192, play: bool = False):
   cfg.actions["finger_joint_pos"].ema_alpha = 0.3
   cfg.rewards["finger_action_rate"].weight = 0.0
   cfg.rewards["finger_action_hf"].weight = -30.0
+  # Keep the policy mean inside the clipped action range (see
+  # action_out_of_bounds). Without it (fixed-wrist runs before 2026-11-17) the
+  # stapler m2o policy parked the thumb at raw actions ~+-7.8, where the
+  # exploration noise no longer changes the clipped action, and never brought
+  # it back to its goal joints.
+  cfg.rewards["finger_action_bound"] = RewardTermCfg(
+    func=mdp.action_out_of_bounds,
+    weight=-1.0,
+    params={"action_name": "finger_joint_pos"},
+  )
   cfg.commands["reorient_command"].success_hold_steps = 13  # 5 × 2.5
   cfg.commands["reorient_command"].goal_switch_delay = 50  # 20 × 2.5
   # per-step-count reward — ÷2.43 to hold the per-cycle integral (Σ1..N ∝ N²)
@@ -309,14 +319,11 @@ def _with_wrist(cfg):
   cfg.rewards["wrist_pose"] = RewardTermCfg(
     func=mdp.wrist_pose_penalty, weight=-0.5, params={"action_name": "wrist_pose"}
   )
-  # Keep the policy mean inside the clipped action range (see action_out_of_bounds).
-  for name, key, weight in (
-    ("finger_joint_pos", "finger_action_bound", -1.0),
-    ("wrist_pose", "wrist_action_bound", -5.0),
-  ):
-    cfg.rewards[key] = RewardTermCfg(
-      func=mdp.action_out_of_bounds, weight=weight, params={"action_name": name}
-    )
+  # Keep the wrist policy mean inside its clipped action range (the fingers'
+  # finger_action_bound is in every 50 Hz cfg).
+  cfg.rewards["wrist_action_bound"] = RewardTermCfg(
+    func=mdp.action_out_of_bounds, weight=-5.0, params={"action_name": "wrist_pose"}
+  )
   cfg.rewards["torque"].params["asset_cfg"] = finger_actuators
   cfg.metrics["torque_saturation_ratio"].params["asset_cfg"] = finger_actuators
   for name in ("joint_acceleration_rms", "joint_vel_rms"):
