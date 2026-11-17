@@ -41,10 +41,11 @@ HAND2_FINGER_CONTACT_PARAM_GEOMS = (
 )
 
 
-def get_wuji_hand2_rig_cfg(hand_side: str = "right") -> EntityCfg:
-  """Build the hand entity with the task-level calibration rig attached."""
+def get_wuji_hand2_rig_cfg(hand_side: str = "right", glove: bool = False) -> EntityCfg:
+  """Build the hand entity with the task-level calibration rig attached
+  (and the glove covers if ``glove``)."""
   robot_cfg = get_wuji_hand2_cfg(hand_side)
-  robot_cfg.spec_fn = partial(get_hand2_reorient_spec, robot_cfg.spec_fn)
+  robot_cfg.spec_fn = partial(get_hand2_reorient_spec, robot_cfg.spec_fn, glove=glove)
   return robot_cfg
 
 
@@ -52,11 +53,13 @@ def wuji_hand2_reorient_env_cfg(
   hand_side: str = "right",
   play: bool = False,
   num_envs: int = 8192,
+  glove: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   """Create the Wuji Hand 2 Reorient task configuration.
 
   Args:
-    hand_side: Only ``"right"`` exists in the MJCF."""
+    hand_side: Only ``"right"`` exists in the MJCF.
+    glove: Put the glove covers on the hand (``hand2_model.apply_hand2_glove``)."""
   if hand_side != "right":
     raise ValueError(f"Unsupported hand_side '{hand_side}'. Only 'right' is supported.")
   cfg = make_reorient_env_cfg(
@@ -80,7 +83,7 @@ def wuji_hand2_reorient_env_cfg(
     robot_tilt_pivot_in_root=REORIENT_HAND2_MOUNT_POS,
     robot_pitch_range=(REORIENT_HAND2_MOUNT_PITCH, REORIENT_HAND2_MOUNT_PITCH),
   )
-  robot_cfg = get_wuji_hand2_rig_cfg(hand_side)
+  robot_cfg = get_wuji_hand2_rig_cfg(hand_side, glove=glove)
   cfg.scene.entities = {
     "robot": robot_cfg,
     "object": get_inhand_object_cfg(),

@@ -68,12 +68,14 @@ NUM_JOINTS = 20
 PALM_BODY = "right_palm_link"
 
 
-def hand2_synth_spec() -> mujoco.MjSpec:
+def hand2_synth_spec(glove: bool = False) -> mujoco.MjSpec:
   """The hand for synthesis: the Wuji Hand 2 on its calibration rig
   (``hand2_model``, the hand the policies train with) and the model options
   the grasp sets were made with (timestep, solver iterations and line
   search are overridden per simulation by ``GraspSynthCfg``)."""
-  spec = get_hand2_model_spec(partial(_get_spec, wuji_hand2_xml_path("right")))
+  spec = get_hand2_model_spec(
+    partial(_get_spec, wuji_hand2_xml_path("right")), glove=glove
+  )
   opt = spec.option
   opt.timestep = 0.01
   opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
