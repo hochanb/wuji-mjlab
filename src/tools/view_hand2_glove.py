@@ -370,8 +370,10 @@ class Viewer:
     sets: dict[str, tuple[mujoco.MjModel, mujoco.MjModel, Grasps, SetStats, dict]],
   ):
     self.server, self.sets = server, sets
-    # viser runs callbacks on a thread pool; one MjData, one update at a time.
-    self.lock = threading.Lock()
+    # Client events run callbacks on a thread pool (one MjData: one update at a
+    # time); setting a GUI value from Python runs its callbacks right away in
+    # the same thread (rank reset in _select_set), hence reentrant.
+    self.lock = threading.RLock()
     self.handles: list = []
     self.contact_handles: list = []
     gui = server.gui
