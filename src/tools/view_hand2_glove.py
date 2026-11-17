@@ -43,7 +43,12 @@ from wuji_mjlab.assets.robots.wuji_hand2.wuji_hand2_cfg import (
   wuji_hand2_xml_path,
 )
 from wuji_mjlab.grasp_synth.synth import TRAINING_WRIST_QUAT_W
-from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import _WARMUP_SQUEEZE
+from wuji_mjlab.tasks.reorient.config.wuji_hand2.grasp_stage import (
+  _HAND_CONDIM,
+  _HAND_SLIDING_FRICTION,
+  _WARMUP_SQUEEZE,
+  _hand_contact_spec,
+)
 from wuji_mjlab.tasks.reorient.config.wuji_hand2.hand2_constants import (
   get_hand2_reorient_spec,
 )
@@ -56,17 +61,25 @@ OBJECT_RGBA = (0.9, 0.62, 0.15)
 DEPTH_LEVELS_MM = (1.0, 3.0, 5.0)
 VARIANTS = ("bare", "glove_soft", "glove_hard")
 HOLD_S = (0.4, 1.0)  # warmup end, 1 s
-CACHE = Path(__file__).resolve().parents[2] / "tmp" / "glove_hold"  # gitignored
+CACHE = Path(__file__).resolve().parents[2] / "tmp" / "glove_hold_v2"  # gitignored
 
 
 def build_model(object_name: str, variant: str) -> mujoco.MjModel:
-  """The training hand with the reorient task's physics (palm at the origin,
+  """The training hand with the grasp-stage contacts (condim 6, sliding
+  friction 1.5: the middle of the training range) and the reorient task's
+  physics (palm at the origin,
   gravity as in training: palm up, pitched by the mount) and the object on a
   free joint (a fixed object would be welded to the world like the palm, and
   MuJoCo never collides geoms of the same weld). ``variant``: bare /
   glove_soft / glove_hard (covers with the links' contact softness)."""
-  spec = get_hand2_reorient_spec(
-    partial(_get_spec, wuji_hand2_xml_path("right")), glove=variant != "bare"
+  spec = _hand_contact_spec(
+    partial(
+      get_hand2_reorient_spec,
+      partial(_get_spec, wuji_hand2_xml_path("right")),
+      glove=variant != "bare",
+    ),
+    _HAND_CONDIM,
+    sum(_HAND_SLIDING_FRICTION) / 2,
   )
   palm = spec.body(PALM)
   palm.pos, palm.quat = [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]
