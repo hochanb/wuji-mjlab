@@ -245,6 +245,15 @@ def displacement(g: Grasps, qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
   return dpos, np.degrees(2 * np.arccos(np.clip(dot, -1, 1)))
 
 
+def _one(g: Grasps, i: int) -> Grasps:
+  return Grasps(
+    g.object_pos[i : i + 1],
+    g.object_quat[i : i + 1],
+    g.joint_q[i : i + 1],
+    g.ids[i : i + 1],
+  )
+
+
 def hold_summary(g: Grasps, st: SetStats, held: dict[str, np.ndarray]) -> str:
   lines = [
     "",
@@ -328,6 +337,11 @@ STATES = (
 STATES_VARIANT = dict(
   zip(STATES, (None, "glove_soft", "glove_hard", "bare"), strict=True)
 )
+SIM_HANDS = {
+  "glove, soft covers": "glove_soft",
+  "glove, hard covers": "glove_hard",
+  "bare": "bare",
+}
 ORDERS = (
   "cover depth (deepest first)",
   "glove soft: object moved (most first)",
@@ -384,8 +398,22 @@ class Viewer:
     self.show_covers = gui.add_checkbox("Show covers", True)
     self.show_collision = gui.add_checkbox("Collision geoms (training)", False)
     self.show_contacts = gui.add_checkbox("Mark penetrations", True)
+    with gui.add_folder("Live physics"):
+      self.sim_hand = gui.add_dropdown("Hand", tuple(SIM_HANDS))
+      self.sim_run = gui.add_checkbox("Run (from the grasp)", False)
+      self.sim_speed = gui.add_slider(
+        "Speed (x real time)", min=0.05, max=2.0, step=0.05, initial_value=1.0
+      )
+      self.sim_restart = gui.add_button("Restart from the grasp")
+      self.sim_info = gui.add_markdown("")
     self.info = gui.add_markdown("")
     self.stats = gui.add_markdown("")
+    self.sim_models: dict = {}
+    self.sim_data = None
+    self.sim_run.on_update(lambda _: self._locked(self._sim_toggle))
+    self.sim_hand.on_update(lambda _: self._locked(self._sim_toggle))
+    self.sim_restart.on_click(lambda _: self._locked(self._sim_reset))
+    threading.Thread(target=self._sim_loop, daemon=True).start()
     for h in (self.set_dd, self.order_dd):
       h.on_update(lambda _: self._locked(self._select_set))
     for h in (
@@ -412,11 +440,72 @@ class Viewer:
 
   def _select_set(self) -> None:
     _, glove, g, st, held = self.sets[self.set_dd.value]
+    self.sim_data = None  # restarted below on the new set's grasp
     self.rank.max = len(g.ids) - 1
     self.rank.value = 0
     self.stats.content = summary(self.set_dd.value, st) + hold_summary(g, st, held)
+    self.display_model = glove
     self._build_scene(glove)
-    self._draw()
+    if self.sim_run.value:
+      self._sim_reset()
+    else:
+      self._draw()
+
+  # --- live physics -------------------------------------------------------------
+
+  def _grasp_index(self) -> int:
+    return int(self._order()[int(self.rank.value)])
+
+  def _sim_model(self) -> mujoco.MjModel:
+    obj = self.set_dd.value.split(":")[0]
+    key = (obj, SIM_HANDS[self.sim_hand.value])
+    if key not in self.sim_models:
+      self.sim_models[key] = build_model(*key)
+    return self.sim_models[key]
+
+  def _sim_toggle(self) -> None:
+    if self.sim_run.value:
+      self._sim_reset()
+    else:
+      self.sim_data = None
+      self._build_scene(self.display_model)
+      self._draw()
+
+  def _sim_reset(self) -> None:
+    """Start the live simulation at the current grasp: finger targets at the
+    grasp joints plus the warmup squeeze (like ``hold``)."""
+    if not self.sim_run.value:
+      return
+    m = self._sim_model()
+    if self.model is not m:
+      self._build_scene(m)
+    g = self.sets[self.set_dd.value][2]
+    i = self._grasp_index()
+    d = mujoco.MjData(m)
+    set_grasp(m, d, g, i)
+    d.ctrl[:] = np.clip(
+      g.joint_q[i] + _squeeze(m), m.actuator_ctrlrange[:, 0], m.actuator_ctrlrange[:, 1]
+    )
+    self.sim_data, self.data, self.sim_i = d, d, i
+    self.sim_clock = time.time()
+    self._render(SIM_HANDS[self.sim_hand.value])
+
+  def _sim_loop(self) -> None:
+    while True:
+      time.sleep(1 / 30)
+      with self.lock:
+        d = self.sim_data
+        if d is None:
+          continue
+        m = self.model
+        now = time.time()
+        steps = int((now - self.sim_clock) * self.sim_speed.value / m.opt.timestep)
+        if steps <= 0:
+          continue
+        self.sim_clock += steps * m.opt.timestep / self.sim_speed.value
+        for _ in range(min(steps, 20)):
+          mujoco.mj_step(m, d)
+        self._render(SIM_HANDS[self.sim_hand.value])
 
   def _build_scene(self, model) -> None:
     for h in self.handles:
@@ -459,14 +548,25 @@ class Viewer:
       self.handles.append(h)
 
   def _draw(self) -> None:
+    if self.sim_data is not None:
+      if self._grasp_index() != self.sim_i:
+        self._sim_reset()
+      else:
+        self._render(SIM_HANDS[self.sim_hand.value])
+      return
     _, _, g, st, held = self.sets[self.set_dd.value]
-    i = int(self._order()[int(self.rank.value)])
+    i = self._grasp_index()
     variant = STATES_VARIANT[self.state_dd.value]
     if variant is None:
       set_grasp(self.model, self.data, g, i)
     else:
       self.data.qpos[:] = held[variant][i, -1]
       mujoco.mj_forward(self.model, self.data)
+    self._render(variant)
+
+  def _render(self, variant: str | None) -> None:
+    _, _, g, st, held = self.sets[self.set_dd.value]
+    i = self._grasp_index()
     covers_on = self.show_covers.value and variant != "bare"
     for h in self.handles:
       h.position = self.data.geom_xpos[h.geom]
@@ -508,7 +608,7 @@ class Viewer:
         "| held 1 s | object moved | turned |",
         "|---|---|---|",
         *[
-          f"| {v} | {displacement(g, held[v][i : i + 1, -1])[0][0]:.1f} mm | {displacement(g, held[v][i : i + 1, -1])[1][0]:.1f} deg |"
+          f"| {v} | {displacement(_one(g, i), held[v][i : i + 1, -1])[0][0]:.1f} mm | {displacement(_one(g, i), held[v][i : i + 1, -1])[1][0]:.1f} deg |"
           for v in VARIANTS
         ],
         "",
@@ -519,6 +619,15 @@ class Viewer:
         "red: cover, yellow: bare link",
       ]
     )
+    if self.sim_data is not None:
+      d = self.sim_data
+      dp, dr = displacement(_one(g, self.sim_i), d.qpos[None])
+      self.sim_info.content = (
+        f"t = {d.time:.2f} s; object moved {dp[0]:.1f} mm, turned {dr[0]:.1f} deg"
+        f" from the grasp pose"
+      )
+    else:
+      self.sim_info.content = ""
 
 
 def main() -> None:
