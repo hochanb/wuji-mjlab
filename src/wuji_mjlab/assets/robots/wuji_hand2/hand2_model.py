@@ -250,6 +250,11 @@ HAND2_COLLISION_CAPSULES = {
 _HAND2_MESH_DIR = wuji_hand2_mesh_dir("right")
 _HAND2_GLOVE_COVERS = Path(__file__).resolve().parent / "glove_covers.yaml"
 HAND2_GLOVE_RGBA = (0.05, 0.05, 0.05, 1.0)
+# Glove covers are soft, the links under them hard: the covers' contacts
+# reach full stiffness over 3.5 mm (the links' over 1 mm, HAND2_GEOM_DEFAULTS)
+# from a lower impedance; same time constant and friction as the hand. A
+# guess until the covers' stiffness is measured.
+HAND2_GLOVE_SOLIMP = (0.7, 0.95, 0.0035, 0.5, 2.0)
 
 
 def apply_hand2_actuator_gains(spec: mujoco.MjSpec) -> mujoco.MjSpec:
@@ -444,9 +449,9 @@ def hand2_glove_covers() -> dict:
 def apply_hand2_glove(spec: mujoco.MjSpec) -> mujoco.MjSpec:
   """Add the glove's soft covers (palm, proximal and middle phalanges; the
   fingertips stay bare): per cover a body welded to its link with a black
-  visual mesh and a collision mesh (``<cover>_col``, the hand's contact
-  parameters via ``apply_hand2_contact``), plus the upstream cover contact
-  exclusions. Call after ``apply_hand2_collision_overlay``, which clears the
+  visual mesh and a collision mesh (``<cover>_col``: soft,
+  ``HAND2_GLOVE_SOLIMP``; the rest of the hand's contact parameters via
+  ``apply_hand2_contact``), plus the upstream cover contact exclusions. Call after ``apply_hand2_collision_overlay``, which clears the
   exclusions."""
   data = hand2_glove_covers()
   assets = dict(spec.assets)
@@ -480,6 +485,7 @@ def apply_hand2_glove(spec: mujoco.MjSpec) -> mujoco.MjSpec:
       type=mujoco.mjtGeom.mjGEOM_MESH,
       meshname=mesh,
       density=0,
+      solimp=HAND2_GLOVE_SOLIMP,
     )
   spec.assets = assets
   for body1, body2 in data["excludes"]:

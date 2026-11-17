@@ -40,6 +40,8 @@ HAND2_FINGER_CONTACT_PARAM_GEOMS = (
   r".*finger[2-5]_tip_sensor_col",
 )
 
+HAND2_GLOVE_COVER_GEOMS = (r".*_cover_col",)
+
 
 def get_wuji_hand2_rig_cfg(hand_side: str = "right", glove: bool = False) -> EntityCfg:
   """Build the hand entity with the task-level calibration rig attached
@@ -62,27 +64,43 @@ def wuji_hand2_reorient_env_cfg(
     glove: Put the glove covers on the hand (``hand2_model.apply_hand2_glove``)."""
   if hand_side != "right":
     raise ValueError(f"Unsupported hand_side '{hand_side}'. Only 'right' is supported.")
+  palm_thumb = (
+    f"{hand_side}_palm_collision",
+    f"{hand_side}_finger1_link2_col",
+    f"{hand_side}_finger1_link3_col",
+    f"{hand_side}_finger1_link4_col",
+    f"{hand_side}_finger1_tip_sensor_col",
+  )
+  # Bare hand: the palm and thumb geoms are the soft pads. With the glove the
+  # covers are (soft defaults in hand2_model, HAND2_GLOVE_SOLIMP) and the palm
+  # and thumb links are hard like the fingers.
+  soft_pads = HAND2_GLOVE_COVER_GEOMS if glove else palm_thumb
+  finger_geoms = (
+    (*HAND2_FINGER_CONTACT_PARAM_GEOMS, *palm_thumb)
+    if glove
+    else HAND2_FINGER_CONTACT_PARAM_GEOMS
+  )
   cfg = make_reorient_env_cfg(
     play=play,
     num_envs=num_envs,
     palm_subtree_body=f"{hand_side}_palm_link",
-    soft_pad_geoms=(
-      f"{hand_side}_palm_collision",
-      f"{hand_side}_finger1_link2_col",
-      f"{hand_side}_finger1_link3_col",
-      f"{hand_side}_finger1_link4_col",
-      f"{hand_side}_finger1_tip_sensor_col",
-    ),
+    soft_pad_geoms=soft_pads,
     # The overlay replaces L2/L3 collision meshes with capsules, so size DR is valid.
     geom_size_dr_geoms=HAND1_GEOM_SIZE_DR_GEOMS,
     tip_collision_geoms=HAND2_TIP_COLLISION_GEOMS,
     tip_contact_body_names=HAND2_TIP_CONTACT_BODY_NAMES,
     distal_finger_object_body_names=HAND2_DISTAL_FINGER_OBJECT_BODY_NAMES,
-    finger_contact_param_geoms=HAND2_FINGER_CONTACT_PARAM_GEOMS,
+    finger_contact_param_geoms=finger_geoms,
     cage_up_axis=REORIENT_HAND2_PALM_NORMAL_AXIS,
     robot_tilt_pivot_in_root=REORIENT_HAND2_MOUNT_POS,
     robot_pitch_range=(REORIENT_HAND2_MOUNT_PITCH, REORIENT_HAND2_MOUNT_PITCH),
   )
+  if glove and "contact_params_palm_thumb" in cfg.events:
+    # The covers' defaults are already soft (3.5 mm): randomize around them,
+    # 2-5 mm, instead of scaling a 1 mm default by 2-5.
+    params = cfg.events["contact_params_palm_thumb"].params
+    lo, hi = params["solimp_width_range"]
+    params["solimp_width_range"] = (lo / 3.5, hi / 3.5)
   robot_cfg = get_wuji_hand2_rig_cfg(hand_side, glove=glove)
   cfg.scene.entities = {
     "robot": robot_cfg,
