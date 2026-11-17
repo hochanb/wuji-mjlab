@@ -20,6 +20,7 @@ repo compound object (``cube``, ``stapler``). The viewer binds to 127.0.0.1.
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -203,6 +204,8 @@ class Viewer:
     sets: dict[str, tuple[mujoco.MjModel, mujoco.MjModel, Grasps, SetStats]],
   ):
     self.server, self.sets = server, sets
+    # viser runs callbacks on a thread pool; one MjData, one update at a time.
+    self.lock = threading.Lock()
     self.handles: list = []
     self.contact_handles: list = []
     gui = server.gui
@@ -217,9 +220,9 @@ class Viewer:
     self.info = gui.add_markdown("")
     self.stats = gui.add_markdown("")
     for h in (self.set_dd, self.order_dd):
-      h.on_update(lambda _: self._select_set())
+      h.on_update(lambda _: self._locked(self._select_set))
     for h in (self.rank, self.show_covers, self.show_collision, self.show_contacts):
-      h.on_update(lambda _: self._draw())
+      h.on_update(lambda _: self._locked(self._draw))
     self._select_set()
 
   def _order(self) -> np.ndarray:
@@ -227,6 +230,10 @@ class Viewer:
     if self.order_dd.value.startswith("cover"):
       return np.argsort(-st.cover_depth, kind="stable")
     return np.argsort(g.ids, kind="stable")
+
+  def _locked(self, fn) -> None:
+    with self.lock:
+      fn()
 
   def _select_set(self) -> None:
     _, glove, g, st = self.sets[self.set_dd.value]
