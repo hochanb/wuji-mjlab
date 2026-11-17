@@ -61,7 +61,7 @@ OBJECT_RGBA = (0.9, 0.62, 0.15)
 DEPTH_LEVELS_MM = (1.0, 3.0, 5.0)
 VARIANTS = ("bare", "glove_soft", "glove_hard")
 HOLD_S = (0.4, 1.0)  # warmup end, 1 s
-CACHE = Path(__file__).resolve().parents[2] / "tmp" / "glove_hold_v2"  # gitignored
+CACHE = Path(__file__).resolve().parents[2] / "tmp" / "glove_hold_v3"  # gitignored
 
 
 def build_model(object_name: str, variant: str) -> mujoco.MjModel:
@@ -110,6 +110,13 @@ def build_model(object_name: str, variant: str) -> mujoco.MjModel:
     )
   model = spec.compile()
   assert model.nq == NUM_JOINTS + 7
+  # The training env's solver options (mjlab MujocoCfg overrides the spec's)
+  # with elliptic friction cones and impratio 10: with the default pyramidal
+  # cones the grasps slip far more, and worse with more friction.
+  model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+  model.opt.iterations, model.opt.ls_iterations = 10, 20
+  model.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+  model.opt.impratio = 10.0
   if variant == "glove_hard":
     link = model.geom("right_palm_collision").id
     for name in hand2_glove_covers()["covers"]:
