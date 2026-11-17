@@ -6,7 +6,8 @@
 # parent link frame; covers on the palm are moved from the upstream palm frame
 # into ours (upstream is rotated 1.858 deg about y and offset 0.3 mm; the finger
 # link frames agree). Change: the adductor pollicis cover (thumb-index web,
-# upstream on the palm) rides on thumb link2, same pose at zero joints.
+# upstream on the palm) rides on thumb link1 (the short link between the
+# thumb's first two joints), same pose at zero joints.
 # excludes: the upstream cover contact exclusions, plus the web against the
 # palm covers it now slides along.
 covers:
@@ -137,10 +138,10 @@ covers:
     iquat: [0.33554511, -0.3762247, -0.58796964, 0.63257898]
     inertia: [8.3534392e-08, 6.66356935e-08, 3.61839316e-08]
   right_adductor_pollicis_cover:
-    parent: right_finger1_link2
+    parent: right_finger1_link1
     mesh: r_adductor_pollicis_cover
-    pos: [-0.0109609253, -0.0030089136, 0.035339255]
-    quat: [0.840110294, 0.0846535784, 0.446336189, -0.296365437]
+    pos: [0.014026184, -0.0103416773, 0.0182925852]
+    quat: [0.617674286, 0.0652755848, 0.730215259, -0.2846107]
     mass: 0.001
     ipos: [0.0376481357, 0.000697464996, -0.0307021009]
     iquat: [-0.00119327, 0.39586868, 0.91740423, -0.04069445]
