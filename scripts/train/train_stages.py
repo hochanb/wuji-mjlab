@@ -7,6 +7,9 @@ next stage's objects and grasps); the policy, optimiser and iteration count
 carry over, and a checkpoint is written at every stage switch. All stages
 are validated before the first env is built.
 
+``--process-per-stage`` runs each stage in fresh worker processes (same log
+dir, resuming from the previous stage's checkpoint), so no GPU memory is
+held over from one stage's env to the next.
 With ``--gpu-ids 0,1`` one worker per GPU trains a single policy (rsl_rl
 multi-GPU, like ``train_rsl_rl.py``); ``env.scene.num_envs`` is per GPU.
 The wrist is fixed at the mount unless ``--wrist`` adds the actuated wrist.
@@ -22,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import os
 import shutil
@@ -75,6 +79,17 @@ def _plain_buffers(runner) -> None:
           m._buffers[name] = buf.clone()
 
 
+def _report_gpu_memory(what: str, rank: int) -> None:
+  if rank == 0 and torch.cuda.is_available():
+    free, total = torch.cuda.mem_get_info()
+    print(
+      f"[INFO] GPU memory, {what}: {(total - free) / 2**30:.1f} of "
+      f"{total / 2**30:.1f} GiB in use (torch reserved "
+      f"{torch.cuda.memory_reserved() / 2**30:.1f} GiB)",
+      flush=True,
+    )
+
+
 def _train(
   training_path: str,
   agent_cfg,
@@ -82,6 +97,7 @@ def _train(
   log_dir: Path,
   wrist: bool,
   resume: str | None = None,
+  max_stages: int | None = None,
 ) -> None:
   """Run every stage on this process's device (one call per GPU worker).
   With ``resume`` (a checkpoint of this training), continue from the
@@ -105,9 +121,13 @@ def _train(
     )
   ends = np.cumsum([s.advance_after_iterations for s in training.stages])
   runner, common_steps = None, start_it * agent_cfg.num_steps_per_env
+  stages_run = 0
   for i, stage in enumerate(training.stages):
     if ends[i] <= start_it:
       continue  # done before the checkpoint
+    if max_stages is not None and stages_run >= max_stages:
+      break
+    stages_run += 1
     iterations = int(ends[i] - max(start_it, ends[i] - stage.advance_after_iterations))
     env_cfg = build_stage_env_cfg(training, i, wrist=wrist)
     apply_overrides({"env": env_cfg}, env_overrides)
@@ -115,7 +135,9 @@ def _train(
     if rank == 0:
       dump_yaml(log_dir / "params" / f"env_stage{i}_{stage.name}.yaml", asdict(env_cfg))
       print(f"[INFO] stage {i} '{stage.name}': {iterations} iterations")
+    _report_gpu_memory(f"stage {i} before its env", rank)
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
+    _report_gpu_memory(f"stage {i} with its env", rank)
     if rank == 0:
       dump_yaml(
         log_dir / "params" / f"obs_layout_stage{i}_{stage.name}.yaml",
@@ -146,6 +168,15 @@ def _train(
     runner.current_learning_iteration += 1  # the next stage starts a new iteration
     common_steps = env.common_step_counter
     env.close()
+    # Let the env (simulation, CUDA graphs and their memory pools) go before
+    # the next stage builds its own: the runner and the wrapper still hold it,
+    # and with both alive a large env count runs out of GPU memory.
+    runner.env = None
+    del wrapped, env
+    gc.collect()
+    if torch.cuda.is_available():
+      torch.cuda.synchronize()
+      torch.cuda.empty_cache()
 
 
 def main() -> None:
@@ -161,6 +192,13 @@ def main() -> None:
     "--wrist",
     action="store_true",
     help="train with the actuated wrist (default: wrist fixed at the mount)",
+  )
+  parser.add_argument(
+    "--process-per-stage",
+    action="store_true",
+    help="run every stage in fresh worker processes (resuming from the previous "
+    "stage's checkpoint, same log dir): all GPU memory is returned between "
+    "stages",
   )
   parser.add_argument(
     "--resume",
@@ -217,7 +255,12 @@ def main() -> None:
   dump_yaml(log_dir / "params" / "agent.yaml", asdict(agent_cfg))
   dump_yaml(
     log_dir / "params" / "launch.yaml",
-    {"wrist": wrist, "gpu_ids": gpu_ids, "env_overrides": env_overrides},
+    {
+      "wrist": wrist,
+      "process_per_stage": args.process_per_stage,
+      "gpu_ids": gpu_ids,
+      "env_overrides": env_overrides,
+    },
   )
   print(
     f"[INFO] {len(training.stages)} stage(s), {training.total_iterations} "
@@ -225,36 +268,55 @@ def main() -> None:
     f"GPUs {gpu_ids or 'default'}, logging to {log_dir}"
   )
 
-  train_args = (
-    str(training.path),
-    agent_cfg,
-    env_overrides,
-    log_dir,
-    wrist,
-    args.resume,
-  )
-  if gpu_ids is None or len(gpu_ids) == 1:
-    if gpu_ids:
-      os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_ids[0])
-    _train(*train_args)
+  def run(resume: str | None, max_stages: int | None) -> None:
+    train_args = (
+      str(training.path),
+      agent_cfg,
+      env_overrides,
+      log_dir,
+      wrist,
+      resume,
+      max_stages,
+    )
+    if not args.process_per_stage and (gpu_ids is None or len(gpu_ids) == 1):
+      if gpu_ids:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_ids[0])
+      _train(*train_args)
+      return
+    import logging
+
+    import torchrunx
+
+    ids = gpu_ids or [int(os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0])]
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, ids))
+    os.environ["MUJOCO_GL"] = "egl"
+    os.environ.setdefault("TORCHRUNX_LOG_DIR", str(log_dir / "torchrunx"))
+    logging.basicConfig(level=logging.INFO)
+    print(f"[INFO] Launching training with {len(ids)} GPUs", flush=True)
+    torchrunx.Launcher(
+      hostnames=["localhost"],
+      workers_per_host=len(ids),
+      backend=None,
+      copy_env_vars=torchrunx.DEFAULT_ENV_VARS_FOR_COPY
+      + ("MUJOCO*", "WUJI_ACTION_DIAGNOSTICS", "WUJI_SIM_CHUNK_SIZE"),
+    ).run(_train, *train_args)
+
+  if not args.process_per_stage:
+    run(args.resume, None)
     return
-
-  import logging
-
-  import torchrunx
-
-  os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
-  os.environ["MUJOCO_GL"] = "egl"
-  os.environ.setdefault("TORCHRUNX_LOG_DIR", str(log_dir / "torchrunx"))
-  logging.basicConfig(level=logging.INFO)
-  print(f"[INFO] Launching training with {len(gpu_ids)} GPUs", flush=True)
-  torchrunx.Launcher(
-    hostnames=["localhost"],
-    workers_per_host=len(gpu_ids),
-    backend=None,
-    copy_env_vars=torchrunx.DEFAULT_ENV_VARS_FOR_COPY
-    + ("MUJOCO*", "WUJI_ACTION_DIAGNOSTICS", "WUJI_SIM_CHUNK_SIZE"),
-  ).run(_train, *train_args)
+  # One stage per launch; the next resumes from the stage-end checkpoint.
+  ends = np.cumsum([s.advance_after_iterations for s in training.stages])
+  resume = args.resume
+  start = 0
+  if resume is not None:
+    start = int(torch.load(resume, map_location="cpu", weights_only=False)["iter"]) + 1
+  for i, stage in enumerate(training.stages):
+    if ends[i] <= start:
+      continue
+    run(resume, 1)
+    resume = str(log_dir / f"model_{int(ends[i]) - 1}_stage{i}_{stage.name}.pt")
+    if not Path(resume).exists():
+      raise SystemExit(f"stage {i} '{stage.name}' left no checkpoint {resume}")
 
 
 if __name__ == "__main__":
