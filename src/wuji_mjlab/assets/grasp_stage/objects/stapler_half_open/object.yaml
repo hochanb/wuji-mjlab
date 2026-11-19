@@ -1,0 +1,3 @@
+name: stapler_half_open
+kind: compound          # compound | mesh
+compound: stapler_half_open  # the stapler opened 7.5 deg (compound_objects)

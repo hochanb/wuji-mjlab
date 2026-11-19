@@ -164,6 +164,11 @@ def cube_parts() -> list[Part]:
   return [Part("box", (0.027, 0.027, 0.027), (0.0, 0.0, 0.0), (0.85, 0.55, 0.2, 1.0))]
 
 
+def stapler_half_open_parts() -> list[Part]:
+  """The stapler opened 7.5 deg, half the default."""
+  return stapler_parts(open_deg=7.5)
+
+
 def spray_parts(
   radius: float = 0.0203125,
   height: float = 0.1171875,
@@ -183,7 +188,174 @@ def spray_parts(
   return [body, trigger]
 
 
-COMPOUND_OBJECTS = {"stapler": stapler_parts, "cube": cube_parts, "spray": spray_parts}
+def remocon_parts(
+  length: float = 0.16 * 2 / 3,
+  width: float = 0.045,
+  thickness: float = 0.018,
+  key: float = 0.009,
+  pitch: float = 0.012,
+  key_height: float = 0.0015,
+  grid_x: float = -0.015,
+  power_inset: float = 0.02,
+  power_key: float = 0.014,
+  scale: float = 1.25,
+) -> list[Part]:
+  """Remote control: a slab (10.7 x 4.5 x 1.8 cm before ``scale``; 13.3 x
+  5.6 x 2.25 cm at 1.25; long axis x, top end +x, buttons +z) with a 3 x 4
+  grid of square keys (9 mm, 1.5 mm proud, 12 mm pitch before ``scale``; 3
+  across, 4 along the length) centred across the width at ``grid_x`` and a
+  power key (``power_key`` across, 14 mm before ``scale``) ``power_inset`` below
+  the top end. ``scale`` multiplies every
+  length. Box primitives only, so collisions use the exact boxes (no convex
+  hull)."""
+  body_color = (0.12, 0.12, 0.14, 1.0)
+  key_color = (0.75, 0.76, 0.78, 1.0)
+  length, width, thickness = length * scale, width * scale, thickness * scale
+  key, pitch, key_height = key * scale, pitch * scale, key_height * scale
+  grid_x, power_inset, power_key = (
+    grid_x * scale,
+    power_inset * scale,
+    power_key * scale,
+  )
+  hx, hy, hz = length / 2, width / 2, thickness / 2
+  kh, kz = key / 2, key_height / 2
+  z = hz + kz
+  keys = [
+    Part(
+      "box",
+      (kh, kh, kz),
+      (grid_x + (1.5 - row) * pitch, (1 - col) * pitch, z),
+      key_color,
+    )
+    for row in range(4)  # top row first
+    for col in range(3)  # left (+y, seen facing the buttons with the top up) first
+  ]
+  ph = power_key / 2
+  power = Part("box", (ph, ph, kz), (hx - power_inset, 0.0, z), (0.8, 0.12, 0.1, 1.0))
+  return [Part("box", (hx, hy, hz), (0.0, 0.0, 0.0), body_color), *keys, power]
+
+
+_CYL_ALONG_X = (float(np.cos(np.pi / 4)), 0.0, float(np.sin(np.pi / 4)), 0.0)
+
+# Flashlight (long axis x, head at +x): body tube, a slightly thicker head and a
+# thin flat slide switch on the body's +z side, a little towards the head.
+FLASHLIGHT_SCALE = 1.2 * 1.25  # on the 2.6 cm x 11 cm body below
+FLASHLIGHT_BODY_RADIUS = 0.013 * FLASHLIGHT_SCALE  # 3.9 cm diameter
+# The body's front end (where the head attaches) is fixed; its tail quarter is
+# cut off: 16.5 cm -> 12.4 cm.
+FLASHLIGHT_BODY_FRONT_X = 0.055 * FLASHLIGHT_SCALE
+FLASHLIGHT_BODY_HALF_LENGTH = 0.055 * FLASHLIGHT_SCALE * 0.75  # 12.4 cm long
+FLASHLIGHT_HEAD_RADIUS = 0.016 * FLASHLIGHT_SCALE  # 4.8 cm diameter
+FLASHLIGHT_HEAD_HALF_LENGTH = (
+  0.015 * FLASHLIGHT_SCALE * 0.75
+)  # 3.4 cm long (3/4 length)
+FLASHLIGHT_SWITCH_SCALE = 1.5  # on the switch at FLASHLIGHT_SCALE
+FLASHLIGHT_SWITCH_HALF = tuple(
+  h * FLASHLIGHT_SCALE * FLASHLIGHT_SWITCH_SCALE for h in (0.006, 0.004, 0.0015)
+)  # 2.7 x 1.8 x 0.675 cm
+FLASHLIGHT_SWITCH_X = (
+  0.015 * FLASHLIGHT_SCALE
+)  # switch centre (x = 0: uncut body middle)
+
+
+def flashlight_parts() -> list[Part]:
+  """Flashlight: body cylinder, thicker head cylinder at +x, slide switch on +z."""
+  body_r, body_hl = FLASHLIGHT_BODY_RADIUS, FLASHLIGHT_BODY_HALF_LENGTH
+  sx, sy, sz = FLASHLIGHT_SWITCH_HALF
+  return [
+    Part(
+      "cylinder",
+      (body_r, body_hl),
+      (FLASHLIGHT_BODY_FRONT_X - body_hl, 0.0, 0.0),
+      (0.15, 0.15, 0.17, 1.0),
+      _CYL_ALONG_X,
+    ),
+    Part(
+      "cylinder",
+      (FLASHLIGHT_HEAD_RADIUS, FLASHLIGHT_HEAD_HALF_LENGTH),
+      (FLASHLIGHT_BODY_FRONT_X + FLASHLIGHT_HEAD_HALF_LENGTH, 0.0, 0.0),
+      (0.75, 0.76, 0.78, 1.0),
+      _CYL_ALONG_X,
+    ),
+    Part(
+      "box",
+      (sx, sy, sz),
+      (FLASHLIGHT_SWITCH_X, 0.0, body_r + sz),
+      (0.9, 0.35, 0.05, 1.0),
+    ),
+  ]
+
+
+def iphone18pro_parts(
+  length: float = 0.150,
+  width: float = 0.0719,
+  thickness: float = 0.00875,
+  mass: float = 0.211,
+) -> list[Part]:
+  """Phone sized as an iPhone 18 Pro (15.0 x 7.19 x 0.875 cm, 211 g;
+  long axis x, top end +x, screen +z) with a 3 x 4 grid of thin square keys
+  (1.5 mm tall) on the front, 90% of the width wide and as far from the
+  bottom (-x) edge as from the long sides, two thin volume buttons on the
+  upper left side and a power button just above the middle of the right side
+  (left / right as seen facing the screen with the top up: +y / -y). One
+  uniform density giving ``mass`` in total. Every part is a box primitive, so
+  collisions use the exact boxes rather than a mesh's convex hull."""
+  body_color = (0.15, 0.15, 0.17, 1.0)
+  button_color = (0.75, 0.76, 0.78, 1.0)
+
+  body_hx, body_hy, body_hz = length / 2, width / 2, thickness / 2
+  # Key / pitch proportions of 8 mm keys at 10.5 mm (rows, along x) and 11 mm
+  # (columns, along y) pitch, scaled so the grid spans 90% of the width.
+  grid_w = 0.9 * 2 * body_hy
+  unit = grid_w / (2 * 11 + 8)
+  key_h, key_hz = 4 * unit, 0.00075
+  pitch_x, pitch_y = 10.5 * unit, 11 * unit
+  margin = body_hy - grid_w / 2
+  grid_cx = -body_hx + margin + 1.5 * pitch_x + key_h
+  z = body_hz + key_hz
+  keys = [
+    (
+      "box",
+      (key_h, key_h, key_hz),
+      (grid_cx + (row - 1.5) * pitch_x, (col - 1) * pitch_y, z),
+    )
+    for row in range(4)
+    for col in range(3)
+  ]
+  side_hy, side_hz = 0.0005, 0.0015  # 1 mm proud of the side, 3 mm tall
+  y = body_hy + side_hy
+  side = [  # at fractions of the half length above the middle
+    ("box", (0.006, side_hy, side_hz), (0.6 * body_hx, y, 0.0)),  # volume up
+    ("box", (0.006, side_hy, side_hz), (0.3867 * body_hx, y, 0.0)),  # volume down
+    ("box", (0.008, side_hy, side_hz), (0.2 * body_hx, -y, 0.0)),  # power
+  ]
+  body = ("box", (body_hx, body_hy, body_hz), (0.0, 0.0, 0.0))
+  shapes = [body, *keys, *side]
+  volume = sum(8.0 * float(np.prod(size)) for _, size, _ in shapes)
+  density = mass / volume
+  colors = [body_color] + [button_color] * (len(shapes) - 1)
+  return [
+    Part(kind, size, pos, rgba, density=density)
+    for (kind, size, pos), rgba in zip(shapes, colors, strict=True)
+  ]
+
+
+def iphone18pro_key(parts: list[Part], row: int, col: int) -> Part:
+  """Front key at ``row`` / ``col`` (1-based) counted from the top left as seen
+  facing the screen with the top (+x) up. ``iphone18pro_parts`` lists the keys
+  row-major from the bottom (-x) row, each row from the right (-y)."""
+  return parts[1 + (4 - row) * 3 + (3 - col)]
+
+
+COMPOUND_OBJECTS = {
+  "stapler": stapler_parts,
+  "stapler_half_open": stapler_half_open_parts,
+  "cube": cube_parts,
+  "spray": spray_parts,
+  "remocon": remocon_parts,
+  "flashlight": flashlight_parts,
+  "iphone18pro": iphone18pro_parts,
+}
 
 
 def compound_spec(name: str) -> mujoco.MjSpec:

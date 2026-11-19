@@ -1,0 +1,3 @@
+name: flashlight
+kind: compound
+compound: flashlight    # body tube 3.9 x 12.4 cm, head 4.8 x 3.4 cm at +x, slide switch 2.7 x 1.8 x 0.675 cm on +z (from origin/flashlight 0e62a97, 1.25x)
