@@ -98,6 +98,7 @@ def _train(
   wrist: bool,
   resume: str | None = None,
   max_stages: int | None = None,
+  glove: bool = False,
 ) -> None:
   """Run every stage on this process's device (one call per GPU worker).
   With ``resume`` (a checkpoint of this training), continue from the
@@ -129,7 +130,7 @@ def _train(
       break
     stages_run += 1
     iterations = int(ends[i] - max(start_it, ends[i] - stage.advance_after_iterations))
-    env_cfg = build_stage_env_cfg(training, i, wrist=wrist)
+    env_cfg = build_stage_env_cfg(training, i, wrist=wrist, glove=glove)
     apply_overrides({"env": env_cfg}, env_overrides)
     env_cfg.seed = agent_cfg.seed + i
     if rank == 0:
@@ -192,6 +193,12 @@ def main() -> None:
     "--wrist",
     action="store_true",
     help="train with the actuated wrist (default: wrist fixed at the mount)",
+  )
+  parser.add_argument(
+    "--glove",
+    action="store_true",
+    help="put the glove covers on the hand (soft covers on hard links; "
+    "default: bare hand)",
   )
   parser.add_argument(
     "--process-per-stage",
@@ -257,6 +264,7 @@ def main() -> None:
     log_dir / "params" / "launch.yaml",
     {
       "wrist": wrist,
+      "glove": args.glove,
       "process_per_stage": args.process_per_stage,
       "gpu_ids": gpu_ids,
       "env_overrides": env_overrides,
@@ -265,6 +273,7 @@ def main() -> None:
   print(
     f"[INFO] {len(training.stages)} stage(s), {training.total_iterations} "
     f"iterations, wrist {'actuated' if wrist else 'fixed'}, "
+    f"{'glove' if args.glove else 'bare hand'}, "
     f"GPUs {gpu_ids or 'default'}, logging to {log_dir}"
   )
 
@@ -277,6 +286,7 @@ def main() -> None:
       wrist,
       resume,
       max_stages,
+      args.glove,
     )
     if not args.process_per_stage and (gpu_ids is None or len(gpu_ids) == 1):
       if gpu_ids:

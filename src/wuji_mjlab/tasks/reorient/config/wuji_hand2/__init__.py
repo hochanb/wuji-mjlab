@@ -55,14 +55,18 @@ register_mjlab_task(
 _RATE_RATIO = 2.5  # 50 Hz / 20 Hz control steps
 
 
-def _reorient_hand2_50hz_env_cfg(num_envs: int = 8192, play: bool = False):
+def _reorient_hand2_50hz_env_cfg(
+  num_envs: int = 8192, play: bool = False, glove: bool = False
+):
   """50 Hz deployment recipe for right-hand operation.
 
   The hold / goal-switch / cage / episode window knobs are rescaled together
   (×2.5) to preserve their wall-clock duration; retune them together, not
   knob-by-knob.
   """
-  cfg = wuji_hand2_reorient_env_cfg(hand_side="right", num_envs=num_envs, play=play)
+  cfg = wuji_hand2_reorient_env_cfg(
+    hand_side="right", num_envs=num_envs, play=play, glove=glove
+  )
   cfg.decimation = 2
   cfg.actions["finger_joint_pos"].ema_alpha = 0.3
   cfg.rewards["finger_action_rate"].weight = 0.0
@@ -116,10 +120,10 @@ _POS_SUCCESS_THRESHOLD = 0.01
 
 
 def _reorient_pos_hand2_50hz_env_cfg(
-  goal_pos_range, num_envs: int = 8192, play: bool = False
+  goal_pos_range, num_envs: int = 8192, play: bool = False, glove: bool = False
 ):
   """50 Hz recipe plus a position goal: success needs orientation and position."""
-  cfg = _reorient_hand2_50hz_env_cfg(num_envs=num_envs, play=play)
+  cfg = _reorient_hand2_50hz_env_cfg(num_envs=num_envs, play=play, glove=glove)
   command = cfg.commands["reorient_command"]
   command.goal_pos_range = goal_pos_range
   command.pos_success_threshold = _POS_SUCCESS_THRESHOLD

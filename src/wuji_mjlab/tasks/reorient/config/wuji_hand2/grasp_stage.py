@@ -94,15 +94,21 @@ def _hand_contact_spec(spec_fn, condim: int, sliding: float):
 
 
 def build_stage_env_cfg(
-  training: TrainingSpec, stage_index: int, play: bool = False, wrist: bool = False
+  training: TrainingSpec,
+  stage_index: int,
+  play: bool = False,
+  wrist: bool = False,
+  glove: bool = False,
 ):
   """Env cfg for one stage. The wrist is fixed at the mount by default;
-  ``wrist=True`` adds the actuated wrist (joints, actions, wrist curriculum)."""
+  ``wrist=True`` adds the actuated wrist (joints, actions, wrist curriculum).
+  ``glove=True`` puts the glove covers on the hand (soft covers on hard
+  links, hand2_model.apply_hand2_glove)."""
   stage = training.stages[stage_index]
   (obj,) = stage.objects  # one object per stage for now (validated)
   if obj.kind != "compound":
     raise NotImplementedError("grasp stage: mesh objects are not supported yet")
-  cfg = _reorient_pos_hand2_50hz_env_cfg(((0.0, 0.0),) * 3, play=play)
+  cfg = _reorient_pos_hand2_50hz_env_cfg(((0.0, 0.0),) * 3, play=play, glove=glove)
   if wrist:
     cfg = _with_wrist(cfg)
   cfg.curriculum.pop("goal_rotation", None)  # goals come from the grasp set
