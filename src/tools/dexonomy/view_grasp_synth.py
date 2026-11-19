@@ -186,12 +186,14 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
         f"/{t}/label_{id(c)}", c.label_text, position=c.offset + (0, 0, 0.13)
       )
       handles.append(c.label)
+    labels = [c.label for c in cells]
     for i, (offset, pose, row) in enumerate(empty):
-      handles.append(
+      labels.append(
         server.scene.add_label(
           f"/{t}/empty_label{i}", f"{row}: no grasp", position=offset + (0, 0, 0.13)
         )
       )
+      handles.append(labels[-1])
       handles.append(
         server.scene.add_mesh_simple(
           f"/{t}/empty_object{i}",
@@ -237,7 +239,7 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
         axes_radius=0.0015,
       )
     handles += [h for k, h in meshes.items() if k != "object_axes"]
-    groups[t] = dict(cells=cells, meshes=meshes, handles=handles)
+    groups[t] = dict(cells=cells, meshes=meshes, handles=handles, labels=labels)
 
   def draw(t: str) -> None:
     cells, meshes = groups[t]["cells"], groups[t]["meshes"]
@@ -276,11 +278,12 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
   speed = gui.add_slider("speed", min=0.1, max=2.0, step=0.1, initial_value=1.0)
   hold_s = gui.add_slider("hold [s]", min=0.5, max=10.0, step=0.5, initial_value=3.0)
   axes = gui.add_checkbox("object axes (x r, y g, z b)", True)
+  labels = gui.add_checkbox("labels", True)
   restart = gui.add_button("restart")
   info = gui.add_markdown("")
   # GUI callbacks run on viser's thread: they only flag work for the loop,
   # which owns the MjData (stepping and resetting them concurrently crashes).
-  state = {"step": 0, "show": True, "reset": False, "axes": False}
+  state = {"step": 0, "show": True, "reset": False, "axes": False, "labels": False}
 
   def reset_all(_=None) -> None:
     state["step"] = 0
@@ -291,6 +294,8 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
     for t, grp in groups.items():
       for h in grp["handles"]:
         h.visible = t == choice.value
+      for h in grp["labels"]:
+        h.visible = t == choice.value and labels.value
       if "object_axes" in grp["meshes"]:
         grp["meshes"]["object_axes"].visible = t == choice.value and axes.value
     reset_all()
@@ -303,6 +308,7 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
   choice.on_update(lambda _: state.update(show=True))
   restart.on_click(lambda _: state.update(reset=True))
   axes.on_update(lambda _: state.update(axes=True))
+  labels.on_update(lambda _: state.update(labels=True))
   gravity.on_update(set_gravity)
   set_gravity()
   print(f"viser: http://127.0.0.1:{args.port}", flush=True)
@@ -317,6 +323,11 @@ def view(args, obj, cfg: GraspSynthCfg, data: dict) -> None:
     elif state["reset"]:
       state["reset"] = False
       reset_all()
+    if state["labels"]:  # visibility only
+      state["labels"] = False
+      for t, grp in groups.items():
+        for h in grp["labels"]:
+          h.visible = t == choice.value and labels.value
     if state["axes"]:  # visibility only, the simulation keeps running
       state["axes"] = False
       for t, grp in groups.items():
