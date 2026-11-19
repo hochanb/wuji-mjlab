@@ -105,6 +105,20 @@ class GraspGoalCommand(InHandReorientCommand):
     self.pose_weights = torch.zeros(n, 2, device=dev)  # (w_pos, w_rot)
     self.joint_goal = torch.zeros(n, len(self._finger_joint_ids), device=dev)
     self.joint_weights = torch.zeros(n, k, device=dev)
+    self._neighbors = cfg.goal_neighbors is not None
+    if self._neighbors:
+      table = np.load(cfg.goal_neighbors)
+      if len(table["count"]) != goals.joint_q.shape[0]:
+        raise ValueError(
+          f"GraspGoalCommand: {cfg.goal_neighbors} has {len(table['count'])} rows, "
+          f"the goal set {goals.joint_q.shape[0]}"
+        )
+      self._nb_index = torch.as_tensor(table["index"], dtype=torch.long, device=dev)
+      self._nb_count = torch.as_tensor(table["count"], dtype=torch.long, device=dev)
+      self._anchor = torch.zeros(n, dtype=torch.long, device=dev)
+      self._recent = torch.full(
+        (n, max(cfg.neighbor_recent, 1)), -1, dtype=torch.long, device=dev
+      )
     # Grasp errors are read by rewards, the success gate, metrics and both
     # observation groups; compute them once per sim state. A step sees two
     # states: the rewards' (after physics) and, after the resets and
@@ -155,10 +169,50 @@ class GraspGoalCommand(InHandReorientCommand):
 
   # -- goal ------------------------------------------------------------------
   def _sample_goal_in_world(self, env_ids: torch.Tensor) -> None:
+    if self._neighbors:
+      idx = self._neighbor_goals(env_ids).cpu()
+      self._set_goal_rows(
+        env_ids, idx, gather_rows(self._goal_tables, idx, self.device)
+      )
+      return
     idx, rows = sample_rows(self._goal_tables, env_ids.numel(), self.device)
     self._set_goal_rows(env_ids, idx, rows)
 
+  def _neighbor_goals(self, env_ids: torch.Tensor) -> torch.Tensor:
+    """A neighbour of each env's anchor (a few redraws to skip its recent
+    anchors, then any neighbour; a random row when it has none). The goal
+    becomes the next anchor and the anchor joins the recent ones."""
+    anchor = self._anchor[env_ids]
+    count = self._nb_count[anchor]
+    recent = self._recent[env_ids]
+    has = count > 0
+    goal = torch.full_like(anchor, -1)
+    cand = goal
+    for _ in range(4):
+      r = (torch.rand(len(anchor), device=self.device) * count).long()
+      cand = self._nb_index[anchor, r.clamp_max((count - 1).clamp_min(0))]
+      fresh = has & ~(cand[:, None] == recent).any(-1)
+      goal = torch.where((goal < 0) & fresh, cand, goal)
+    goal = torch.where((goal < 0) & has, cand, goal)
+    rand = torch.randint(0, self._nb_count.numel(), anchor.shape, device=self.device)
+    goal = torch.where(has, goal, rand)
+    self._recent[env_ids] = torch.cat([anchor[:, None], recent[:, :-1]], dim=1)
+    self._anchor[env_ids] = goal
+    return goal
+
   def _resample_command(self, env_ids: torch.Tensor) -> None:
+    if self._neighbors:
+      # A new initial grasp: the first goal is one of its neighbours (no
+      # goal kept across a failure, it may be far from the new start).
+      init = self._env.__dict__.get("_init_grasp_index")
+      self._anchor[env_ids] = (
+        init[env_ids]
+        if init is not None
+        else torch.randint(0, self._nb_count.numel(), env_ids.shape, device=self.device)
+      )
+      self._recent[env_ids] = -1
+      super(GraspGoalCommand, self)._resample_command(env_ids)
+      return
     keep = self._failed(env_ids)
     kept_ids = env_ids[keep] if keep is not None else env_ids[:0]
     kept_idx = self.goal_index[kept_ids].cpu()
@@ -325,6 +379,13 @@ class GraspGoalCommandCfg(InHandReorientCommandCfg):
   # translucent ghost; alpha 0 hides it (also a checkbox in the viser panel).
   goal_hand_alpha: float = 0.35
   goal_hand_color: tuple[float, float, float, float] = (0.2, 0.8, 0.4, 1.0)
+  # Grasp-to-grasp goals: a neighbour table (grasp_neighbors.py, rows of the
+  # goal set, which is also the initial grasp set). The first goal of an
+  # episode is a neighbour of its initial grasp, each next goal (after a
+  # success) a neighbour of the goal reached, skipping the last
+  # ``neighbor_recent`` anchors where possible. None: goals from the whole set.
+  goal_neighbors: str | None = None
+  neighbor_recent: int = 4
   # Episodes ended by these termination terms (failures: a drop, a flick)
   # restart on the same goal; others (time out, the first reset) draw a new
   # one. Without it the goals a policy fails on fastest leave the data.

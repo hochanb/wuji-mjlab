@@ -30,7 +30,11 @@ from wuji_mjlab.assets.objects.inhand_object.compound_objects import (
 )
 from wuji_mjlab.tasks.reorient.grasp_stage import mdp as gmdp
 from wuji_mjlab.tasks.reorient.grasp_stage.command import GraspGoalCommandCfg
-from wuji_mjlab.tasks.reorient.grasp_stage.schema import TrainingSpec, load_training
+from wuji_mjlab.tasks.reorient.grasp_stage.schema import (
+  NEIGHBOR_TABLE,
+  TrainingSpec,
+  load_training,
+)
 from wuji_mjlab.tasks.reorient.mdp.graphed import graph_plain_terms, graphed_term
 
 from . import _reorient_pos_hand2_50hz_env_cfg, _with_wrist
@@ -143,6 +147,11 @@ def build_stage_env_cfg(
       "tip_point_offsets": HAND2_TIP_PAD_POINTS,
       "pad_depth": training.hand_spec.pad_depth,
       "goal_grasp_sets": goal_sets,
+      "goal_neighbors": (
+        str(stage.goal_set_folders[obj.name][0] / NEIGHBOR_TABLE)
+        if stage.goal_sampling == "neighbors"
+        else None
+      ),
       "hand": training.hand,
       # A drop or a speed-limit end restarts on the same goal.
       "keep_goal_on_terminations": ("cage_drop", "object_speed_limit"),

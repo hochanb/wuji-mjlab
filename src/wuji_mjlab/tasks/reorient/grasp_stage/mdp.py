@@ -119,7 +119,13 @@ def reset_to_init_grasp(
   robot: Entity = env.scene[robot_cfg.name]
   obj: Entity = env.scene[object_cfg.name]
   dev, n = env.device, env_ids.numel()
-  _, (pos, quat, q) = sample_rows(_init_grasp_tables(env, grasp_sets, hand), n, dev)
+  idx, (pos, quat, q) = sample_rows(_init_grasp_tables(env, grasp_sets, hand), n, dev)
+  # Row drawn per env, for goals chosen near the initial grasp
+  # (GraspGoalCommandCfg.goal_neighbors; the command resets after the events).
+  init_index = env.__dict__.setdefault(
+    "_init_grasp_index", torch.zeros(env.num_envs, dtype=torch.long, device=dev)
+  )
+  init_index[env_ids] = idx.to(dev)
 
   joint_ids = _cached(
     env,

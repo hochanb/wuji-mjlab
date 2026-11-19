@@ -144,6 +144,10 @@ class ObjectSpec:
   encoding: tuple[float, ...] | None = None
 
 
+GOAL_SAMPLING = ("random", "neighbors")
+NEIGHBOR_TABLE = "neighbors.npz"  # in the grasp set folder (grasp_neighbors.py)
+
+
 @dataclass(frozen=True)
 class StageSpec:
   name: str
@@ -154,6 +158,11 @@ class StageSpec:
   # Grasp-set folders behind init_grasps / goal_grasps, per object.
   init_set_folders: dict[str, tuple[Path, ...]] = field(default_factory=dict)
   goal_set_folders: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+  # "random": goals drawn from the whole goal set (default). "neighbors": the
+  # first goal is a neighbour of the initial grasp and each next goal one of
+  # the goal reached (grasp-to-grasp chains); the init and goal grasps are one
+  # grasp set with a neighbour table (src/tools/grasp_neighbors.py).
+  goal_sampling: str = "random"
 
 
 @dataclass(frozen=True)
@@ -565,6 +574,30 @@ def load_training(path: str | Path) -> TrainingSpec:
         role = "init" if key == "init_grasps" else "goal"
         _check_joint_limits(merged[n], hand, role, f"{w}.{key}.{n}")
       sets[key] = merged
+    goal_sampling = str(s.get("goal_sampling", "random"))
+    if goal_sampling not in GOAL_SAMPLING:
+      raise GraspStageError(
+        f"{w}.goal_sampling: {goal_sampling!r} is not one of {GOAL_SAMPLING}"
+      )
+    if goal_sampling == "neighbors":
+      for n in obj_names:
+        init_f, goal_f = folders["init_grasps"][n], folders["goal_grasps"][n]
+        if init_f != goal_f or len(goal_f) != 1:
+          raise GraspStageError(
+            f"{w}: goal_sampling neighbors needs init_grasps and goal_grasps to be "
+            f"the same single grasp set for {n!r}"
+          )
+        table = goal_f[0] / NEIGHBOR_TABLE
+        if not table.is_file():
+          raise GraspStageError(
+            f"{w}: {table} missing (src/tools/grasp_neighbors.py {goal_f[0]})"
+          )
+        count = np.load(table)["count"]
+        if len(count) != len(sets["goal_grasps"][n].ids):
+          raise GraspStageError(
+            f"{w}: {table} has {len(count)} rows, the grasp set "
+            f"{len(sets['goal_grasps'][n].ids)} (rebuild it)"
+          )
     advance = _require(s, "advance", w)
     iters = advance.get("after_iterations") if isinstance(advance, dict) else None
     if not isinstance(iters, int) or iters <= 0:
@@ -578,6 +611,7 @@ def load_training(path: str | Path) -> TrainingSpec:
         iters,
         folders["init_grasps"],
         folders["goal_grasps"],
+        goal_sampling,
       )
     )
   return TrainingSpec(path, hand, enc_name, enc_dim, tuple(stages))
