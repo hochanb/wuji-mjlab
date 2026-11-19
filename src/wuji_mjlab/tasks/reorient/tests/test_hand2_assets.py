@@ -254,6 +254,32 @@ def test_hand2_reorient_preserves_explicit_geom_physics() -> None:
   assert model.geom_group[0] == 1
 
 
+def test_hand2_glove_covers_sit_on_their_links() -> None:
+  from wuji_mjlab.assets.robots.wuji_hand2.hand2_model import hand2_glove_covers
+
+  covers = hand2_glove_covers()["covers"]
+  bare = wuji_hand2_reorient_env_cfg(num_envs=1).scene.entities["robot"]
+  glove = wuji_hand2_reorient_env_cfg(num_envs=1, glove=True).scene.entities["robot"]
+  m0, m = bare.spec_fn().compile(), glove.spec_fn().compile()
+  assert len(covers) == 21
+  assert m.nbody == m0.nbody + len(covers)
+  for name, cover in covers.items():
+    body = m.body(name)
+    assert m.body(int(body.parentid[0])).name == cover["parent"]
+    col = m.geom(f"{name}_col")
+    assert col.contype and col.conaffinity and m.geom_group[col.id] == 3
+    assert not (m.geom_contype[m.geom(f"{name}_visual").id])
+  # Open hand (zero joints): no cover touches the hand.
+  d = mujoco.MjData(m)
+  mujoco.mj_forward(m, d)
+  cover_ids = {m.body(name).id for name in covers}
+  assert not [
+    c
+    for c in d.contact[: d.ncon]
+    if {m.geom_bodyid[c.geom1], m.geom_bodyid[c.geom2]} & cover_ids
+  ]
+
+
 @pytest.mark.parametrize("side", SIDES)
 def test_hand2_loader_exposes_task_naming_convention(side: str) -> None:
   cfg = wuji_hand2_reorient_env_cfg(hand_side=side, num_envs=1)

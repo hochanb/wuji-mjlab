@@ -76,10 +76,11 @@ def apply_hand2_reorient_physics(spec: mujoco.MjSpec) -> mujoco.MjSpec:
 
 def get_hand2_reorient_spec(
   base_spec_fn: Callable[[], mujoco.MjSpec],
+  glove: bool = False,
 ) -> mujoco.MjSpec:
-  """The hand on its calibration rig (``hand2_model``) with the reorient
-  task's simulation options."""
-  return apply_hand2_reorient_physics(get_hand2_model_spec(base_spec_fn))
+  """The hand on its calibration rig (``hand2_model``, with the glove covers
+  if ``glove``) with the reorient task's simulation options."""
+  return apply_hand2_reorient_physics(get_hand2_model_spec(base_spec_fn, glove=glove))
 
 
 # Cage joint pose (finger1=thumb ... finger5=pinky; joint2 = abduction).

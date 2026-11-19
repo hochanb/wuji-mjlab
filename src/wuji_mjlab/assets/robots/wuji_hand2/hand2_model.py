@@ -3,13 +3,17 @@
 """The Wuji Hand 2 as it is used (task independent): the calibration rig it
 is mounted on (mount, jig, wrist tag), its capsule collision model, contact
 parameters, and the actuator gains and force limits measured on the
-hardware. ``get_hand2_model_spec`` builds it; tasks add their simulation
-options (e.g. the reorient task's ``get_hand2_reorient_spec``) and tools
-(grasp synthesis) theirs."""
+hardware, optionally with the glove covers (``glove_covers.yaml``).
+``get_hand2_model_spec`` builds it; tasks add their simulation options (e.g.
+the reorient task's ``get_hand2_reorient_spec``) and tools (grasp synthesis)
+theirs."""
 
 from collections.abc import Callable
+from functools import cache
+from pathlib import Path
 
 import mujoco
+import yaml
 
 from wuji_mjlab.assets.robots.wuji_hand2.wuji_hand2_cfg import wuji_hand2_mesh_dir
 
@@ -244,6 +248,13 @@ HAND2_COLLISION_CAPSULES = {
 }
 
 _HAND2_MESH_DIR = wuji_hand2_mesh_dir("right")
+_HAND2_GLOVE_COVERS = Path(__file__).resolve().parent / "glove_covers.yaml"
+HAND2_GLOVE_RGBA = (0.05, 0.05, 0.05, 1.0)
+# Glove covers are soft, the links under them hard: the covers' contacts
+# reach full stiffness over 3.5 mm (the links' over 1 mm, HAND2_GEOM_DEFAULTS)
+# from a lower impedance; same time constant and friction as the hand. A
+# guess until the covers' stiffness is measured.
+HAND2_GLOVE_SOLIMP = (0.7, 0.95, 0.0035, 0.5, 2.0)
 
 
 def apply_hand2_actuator_gains(spec: mujoco.MjSpec) -> mujoco.MjSpec:
@@ -428,14 +439,71 @@ def apply_hand2_contact(spec: mujoco.MjSpec) -> mujoco.MjSpec:
   return spec
 
 
+@cache
+def hand2_glove_covers() -> dict:
+  """``glove_covers.yaml``: {"covers": {name: parent, mesh, pose, inertia},
+  "excludes": [[body, body], ...]}."""
+  return yaml.safe_load(_HAND2_GLOVE_COVERS.read_text())
+
+
+def apply_hand2_glove(spec: mujoco.MjSpec) -> mujoco.MjSpec:
+  """Add the glove's soft covers (palm, proximal and middle phalanges; the
+  fingertips stay bare): per cover a body welded to its link with a black
+  visual mesh and a collision mesh (``<cover>_col``: soft,
+  ``HAND2_GLOVE_SOLIMP``; the rest of the hand's contact parameters via
+  ``apply_hand2_contact``), plus the upstream cover contact exclusions. Call after ``apply_hand2_collision_overlay``, which clears the
+  exclusions."""
+  data = hand2_glove_covers()
+  assets = dict(spec.assets)
+  for name, cover in data["covers"].items():
+    mesh, filename = cover["mesh"], f"{cover['mesh']}.STL"
+    spec.add_mesh(name=mesh, content_type="model/stl", file=filename)
+    asset_key = f"{spec.meshdir}/{filename}" if spec.meshdir else filename
+    assets[asset_key] = (_HAND2_MESH_DIR / filename).read_bytes()
+    body = spec.body(cover["parent"]).add_body(
+      name=name,
+      pos=cover["pos"],
+      quat=cover["quat"],
+      mass=cover["mass"],
+      ipos=cover["ipos"],
+      iquat=cover["iquat"],
+      inertia=cover["inertia"],
+      explicitinertial=1,
+    )
+    body.add_geom(
+      name=f"{name}_visual",
+      type=mujoco.mjtGeom.mjGEOM_MESH,
+      meshname=mesh,
+      contype=0,
+      conaffinity=0,
+      group=1,
+      density=0,
+      rgba=HAND2_GLOVE_RGBA,
+    )
+    body.add_geom(
+      name=f"{name}_col",
+      type=mujoco.mjtGeom.mjGEOM_MESH,
+      meshname=mesh,
+      density=0,
+      solimp=HAND2_GLOVE_SOLIMP,
+    )
+  spec.assets = assets
+  for body1, body2 in data["excludes"]:
+    spec.add_exclude(bodyname1=body1, bodyname2=body2)
+  return spec
+
+
 def get_hand2_model_spec(
   base_spec_fn: Callable[[], mujoco.MjSpec],
+  glove: bool = False,
 ) -> mujoco.MjSpec:
   """The hand on its calibration rig: rig, capsule collisions, contact
   parameters, measured actuator gains and force limits (no simulation
-  options)."""
+  options); ``glove=True`` adds the glove covers (``apply_hand2_glove``)."""
   spec = inject_hand2_rig(base_spec_fn())
   spec = apply_hand2_collision_overlay(spec)
+  if glove:
+    spec = apply_hand2_glove(spec)
   spec = apply_hand2_contact(spec)
   spec = apply_hand2_actuator_gains(spec)
   return apply_hand2_force_limits(spec)
