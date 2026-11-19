@@ -409,12 +409,19 @@ def wrist_pose_penalty(env, action_name: str = WRIST_ACTION) -> torch.Tensor:
 
 
 def action_out_of_bounds(
-  env, action_name: str = FINGER_ACTION, bound: float = 1.0
+  env, action_name: str = FINGER_ACTION, bound: float = 1.0, power: float = 2.0
 ) -> torch.Tensor:
-  """Squared excess of one action term's raw actions beyond ``[-bound, bound]``.
+  """Excess of one action term's raw actions beyond ``[-bound, bound]``, to
+  ``power`` (2: squared, 1: linear), summed over the action dims.
 
   The env clips actions to that range, so without this term a policy mean that
-  drifts outside it gets no gradient back and its std can grow unchecked.
+  drifts outside it gets no gradient back and its std can grow unchecked. The
+  squared form barely pulls a mean just past the bound (0.25 over: 0.06), where
+  the clip already removes every other reward's gradient for that dim; the
+  linear form pulls with the same force at any excess.
   """
   raw = env.action_manager.get_term(action_name).raw_action
-  return torch.sum(torch.square(torch.relu(raw.abs() - bound)), dim=-1)
+  excess = torch.relu(raw.abs() - bound)
+  if power == 1.0:
+    return torch.sum(excess, dim=-1)
+  return torch.sum(excess.pow(power), dim=-1)

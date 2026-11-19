@@ -75,11 +75,13 @@ def _reorient_hand2_50hz_env_cfg(
   # action_out_of_bounds). Without it (fixed-wrist runs before 2026-11-17) the
   # stapler m2o policy parked the thumb at raw actions ~+-7.8, where the
   # exploration noise no longer changes the clipped action, and never brought
-  # it back to its goal joints.
+  # it back to its goal joints. Linear in the excess: the squared form left the
+  # spray m2o policy (2026-11-19) parked at raw actions ~1.25 on the pinky and
+  # index (0.06 per joint per step against ~1 of hand-shape reward it gave up).
   cfg.rewards["finger_action_bound"] = RewardTermCfg(
     func=mdp.action_out_of_bounds,
-    weight=-1.0,
-    params={"action_name": "finger_joint_pos"},
+    weight=-2.0,
+    params={"action_name": "finger_joint_pos", "power": 1.0},
   )
   cfg.commands["reorient_command"].success_hold_steps = 13  # 5 × 2.5
   cfg.commands["reorient_command"].goal_switch_delay = 50  # 20 × 2.5
