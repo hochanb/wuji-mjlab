@@ -164,7 +164,26 @@ def cube_parts() -> list[Part]:
   return [Part("box", (0.027, 0.027, 0.027), (0.0, 0.0, 0.0), (0.85, 0.55, 0.2, 1.0))]
 
 
-COMPOUND_OBJECTS = {"stapler": stapler_parts, "cube": cube_parts}
+def spray_parts(
+  radius: float = 0.0203125,
+  height: float = 0.1171875,
+  trigger_radius: float = 0.01,
+  trigger_height: float = 0.01875,
+) -> list[Part]:
+  """Spray can: a cylindrical body along z (40.6 mm across, 117.2 mm tall)
+  and a cylindrical trigger (button) centred on its top (20 mm across,
+  18.75 mm tall); the reorient cube's density (~121 g)."""
+  body = Part("cylinder", (radius, height / 2), (0.0, 0.0, 0.0), (0.2, 0.45, 0.85, 1.0))
+  trigger = Part(
+    "cylinder",
+    (trigger_radius, trigger_height / 2),
+    (0.0, 0.0, height / 2 + trigger_height / 2),
+    (0.85, 0.15, 0.12, 1.0),
+  )
+  return [body, trigger]
+
+
+COMPOUND_OBJECTS = {"stapler": stapler_parts, "cube": cube_parts, "spray": spray_parts}
 
 
 def compound_spec(name: str) -> mujoco.MjSpec:
